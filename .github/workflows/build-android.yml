@@ -1,0 +1,78 @@
+name: Build Android Native APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        required: true
+        type: string
+      userId:
+        required: true
+        type: string
+      payload:
+        required: true
+        type: string
+  repository_dispatch:
+    types: [web2apk-build-android]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse payload
+        id: meta
+        env:
+          PAYLOAD_JSON: ${{ github.event_name == 'repository_dispatch' && toJson(github.event.client_payload) || inputs.payload }}
+        run: |
+          printf '%s' "$PAYLOAD_JSON" > /tmp/payload.json
+          python3 -c "
+          import json,os
+          p=json.load(open('/tmp/payload.json'))
+          if isinstance(p.get('payload'),dict): p={**p,**p['payload']}
+          def g(*ks):
+            for k in ks:
+              v=p.get(k)
+              if v: return str(v)
+            return ''
+          open(os.environ['GITHUB_OUTPUT'],'a').write('asset_id='+g('assetId')+'\nrelease_tag='+g('zipReleaseTag','releaseTag')+'\nrepo='+g('repo')+'\njob_id='+g('jobId')+'\n')
+          tok=g('downloadToken')
+          if tok: open(os.environ['GITHUB_ENV'],'a').write('DL_TOKEN='+tok+'\n')
+          "
+      - name: Download ZIP
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_ID: ${{ steps.meta.outputs.asset_id }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          REPO_NAME: ${{ steps.meta.outputs.repo }}
+        run: |
+          set -e
+          REPO="${REPO_NAME:-$GITHUB_REPOSITORY}"
+          TOKEN="${DL_TOKEN:-$GH_TOKEN}"
+          AID="${ASSET_ID}"
+          curl -sS -L -o project.zip \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/$REPO/releases/assets/$AID"
+          unzip -q project.zip -d project_src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build
+        run: |
+          set -e
+          ROOT=$(find project_src -name gradlew -type f | head -1 | xargs dirname)
+          cd "$ROOT"
+          chmod +x gradlew
+          ./gradlew assembleRelease
+          APK=$(find . -name '*.apk' -path '*/release/*' | head -1)
+          cp "$APK" "$GITHUB_WORKSPACE/app-release.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ steps.meta.outputs.job_id }}
+          path: app-release.apk
