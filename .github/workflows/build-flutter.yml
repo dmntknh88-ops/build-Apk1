@@ -312,6 +312,54 @@ jobs:
           } > android/local.properties
           cat android/local.properties
 
+
+      - name: Fix minSdk for plugins (flutter_tts etc)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          roots = [
+              Path("android/app/build.gradle"),
+              Path("android/app/build.gradle.kts"),
+              Path("android/local.properties"),
+          ]
+          # Also patch any minSdk in gradle files under android/
+          files = list(Path("android").rglob("build.gradle")) + list(Path("android").rglob("build.gradle.kts"))
+          for f in files:
+              if not f.is_file():
+                  continue
+              t = f.read_text(encoding="utf-8", errors="ignore")
+              orig = t
+              # Groovy: minSdkVersion 21 / minSdk 21
+              t = re.sub(r"minSdkVersion\s+\d+", "minSdkVersion 24", t)
+              t = re.sub(r"minSdk\s*=\s*\d+", "minSdk = 24", t)
+              t = re.sub(r"minSdk\s+\d+", "minSdk 24", t)
+              # Kotlin DSL: minSdk = 21, minSdkVersion.set(21)
+              t = re.sub(r"minSdkVersion\.set\(\d+\)", "minSdkVersion.set(24)", t)
+              t = re.sub(r"minSdk\.set\(\d+\)", "minSdk.set(24)", t)
+              if t != orig:
+                  f.write_text(t, encoding="utf-8")
+                  print("patched", f)
+          # Ensure flutter.minSdkVersion override via gradle.properties / local.properties
+          lp = Path("android/local.properties")
+          if lp.exists():
+              txt = lp.read_text(encoding="utf-8", errors="ignore")
+              if "flutter.minSdkVersion" not in txt:
+                  with lp.open("a", encoding="utf-8") as fh:
+                      fh.write("\nflutter.minSdkVersion=24\n")
+                  print("local.properties flutter.minSdkVersion=24")
+          gp = Path("android/gradle.properties")
+          if gp.exists():
+              txt = gp.read_text(encoding="utf-8", errors="ignore")
+              if "flutter.minSdkVersion" not in txt:
+                  with gp.open("a", encoding="utf-8") as fh:
+                      fh.write("\nflutter.minSdkVersion=24\n")
+                  print("gradle.properties flutter.minSdkVersion=24")
+          print("minSdk fix done")
+          PY
+
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
