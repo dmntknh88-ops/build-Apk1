@@ -1,291 +1,311 @@
 name: Build Flutter APK
 
 on:
-  repository_dispatch:
-    types: [web2apk-build-flutter]
   workflow_dispatch:
+    inputs:
+      jobId:
+        description: Job ID
+        required: true
+        type: string
+      userId:
+        description: User ID
+        required: true
+        type: string
+      payload:
+        description: JSON payload
+        required: true
+        type: string
+  repository_dispatch:
+    types:
+      - web2apk-build-flutter
+      - web2apk-build
 
 env:
-  JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.27.4'
-  ANDROID_API_LEVEL: '34'
-  ANDROID_BUILD_TOOLS: '34.0.0'
+  JAVA_VERSION: "17"
+  FLUTTER_VERSION: "3.27.4"
+  ANDROID_API_LEVEL: "34"
+  ANDROID_BUILD_TOOLS: "34.0.0"
 
 jobs:
   build:
     name: Flutter APK
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+
     steps:
-      # ==========================================
-      # STEP 1: Checkout Repository
-      # ==========================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==========================================
-      # STEP 2: Setup Java
-      # ==========================================
+      - name: Parse payload
+        id: meta
+        env:
+          PAYLOAD_INPUT: ${{ inputs.payload }}
+          JOB_ID_INPUT: ${{ inputs.jobId }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, os
+          event_name = os.environ.get("EVENT_NAME", "")
+          event_path = os.environ.get("EVENT_PATH", "")
+          p = {}
+          if event_name == "repository_dispatch" and event_path and os.path.isfile(event_path):
+              ev = json.load(open(event_path, encoding="utf-8"))
+              p = ev.get("client_payload") or {}
+              print("source=repository_dispatch", list(p.keys()))
+          else:
+              raw = os.environ.get("PAYLOAD_INPUT") or ""
+              if raw:
+                  try:
+                      p = json.loads(raw)
+                  except Exception as e:
+                      print("payload json error", e)
+                      p = {}
+              print("source=workflow_dispatch", list(p.keys()) if isinstance(p, dict) else type(p))
+
+          def g(*keys):
+              for k in keys:
+                  v = p.get(k) if isinstance(p, dict) else None
+                  if v is not None and str(v).strip() != "":
+                      return str(v).strip()
+              return ""
+
+          asset = g("assetId", "asset_id")
+          tag = g("zipReleaseTag", "releaseTag", "release_tag")
+          repo = g("repo") or os.environ.get("GITHUB_REPOSITORY", "")
+          token = g("downloadToken", "token", "ghToken")
+          app = g("appName", "app_name") or "MyApp"
+          job_id = g("jobId", "job_id") or os.environ.get("JOB_ID_INPUT", "")
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as f:
+              f.write(f"asset_id={asset}\n")
+              f.write(f"release_tag={tag}\n")
+              f.write(f"repo={repo}\n")
+              f.write(f"app_name={app}\n")
+              f.write(f"job_id={job_id}\n")
+          if token:
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+                  f.write(f"DL_TOKEN={token}\n")
+          print("asset_id=", asset)
+          print("release_tag=", tag)
+          print("repo=", repo)
+          print("job_id=", job_id)
+          print("has_token=", "yes" if token else "no")
+          PY
+
+      - name: Download project ZIP from GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_ID: ${{ steps.meta.outputs.asset_id }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          REPO_NAME: ${{ steps.meta.outputs.repo }}
+        run: |
+          set -eu
+          mkdir -p project_src
+          REPO="${REPO_NAME:-$GITHUB_REPOSITORY}"
+          TAG="${RELEASE_TAG:-}"
+          AID="${ASSET_ID:-}"
+          TOKEN="${DL_TOKEN:-$GH_TOKEN}"
+          if [ -z "$TOKEN" ]; then TOKEN="$GH_TOKEN"; fi
+          echo "REPO=$REPO TAG=$TAG ASSET_ID=$AID token_len=${#TOKEN}"
+
+          download_asset() {
+            local id="$1"
+            local out="$2"
+            local code
+            code=$(curl -sS -L --retry 5 --retry-delay 2 --connect-timeout 30 \
+              -o "$out" -w "%{http_code}" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/releases/assets/${id}" || echo "000")
+            local sz
+            sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+            echo "download_asset id=$id HTTP=$code size=$sz"
+            if head -c 40 "$out" 2>/dev/null | grep -qiE '<!doctype|<html|\{"message"'; then
+              head -c 300 "$out" || true
+              return 1
+            fi
+            [ "$sz" -gt 10000 ]
+          }
+
+          OK=0
+          if [ -n "$AID" ]; then
+            if download_asset "$AID" project.zip; then OK=1; fi
+          fi
+
+          if [ "$OK" -eq 0 ] && [ -n "$TAG" ]; then
+            REL=$(curl -sS \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" || true)
+            AID2=$(printf '%s' "$REL" | python3 -c '
+          import json,sys
+          try:
+            d=json.load(sys.stdin)
+            print(next((str(a["id"]) for a in d.get("assets",[]) if a.get("name")=="project.zip"),""))
+          except Exception:
+            print("")
+          ')
+            echo "AID2=$AID2"
+            if [ -n "$AID2" ]; then
+              if download_asset "$AID2" project.zip; then OK=1; fi
+            fi
+          fi
+
+          if [ "$OK" -eq 0 ] && [ -n "$TAG" ]; then
+            if command -v gh >/dev/null 2>&1; then
+              GH_TOKEN="$TOKEN" gh release download "$TAG" -R "$REPO" -p "project.zip" -D . || true
+              if [ -f project.zip ]; then
+                SZ=$(stat -c%s project.zip)
+                if [ "$SZ" -gt 10000 ]; then OK=1; else rm -f project.zip; fi
+              fi
+            fi
+          fi
+
+          if [ "$OK" -eq 0 ]; then
+            echo "FATAL ZIP download failed REPO=$REPO TAG=$TAG AID=$AID"
+            exit 1
+          fi
+
+          echo "ZIP OK size=$(stat -c%s project.zip)"
+          unzip -q project.zip -d project_src
+          ND=$(find project_src -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || echo 0)
+          NF=$(find project_src -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l || echo 0)
+          if [ "$ND" -eq 1 ] && [ "$NF" -eq 0 ]; then
+            ROOT=$(find project_src -mindepth 1 -maxdepth 1 -type d | head -1)
+            mv "$ROOT"/* project_src/ 2>/dev/null || true
+            mv "$ROOT"/.[!.]* project_src/ 2>/dev/null || true
+            rmdir "$ROOT" 2>/dev/null || true
+          fi
+          find project_src -maxdepth 3 -type f 2>/dev/null | head -40 || true
+          echo "project files listed OK"
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # ==========================================
-      # STEP 3: Setup Android SDK
-      # ==========================================
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: |
+          set -euo pipefail
+          ANDROID_ROOT="$HOME/android-sdk"
+          mkdir -p "$ANDROID_ROOT/cmdline-tools"
+          cd /tmp
+          curl -fsSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdtools.zip -d "$ANDROID_ROOT/cmdline-tools"
+          rm -rf "$ANDROID_ROOT/cmdline-tools/latest"
+          mv "$ANDROID_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_ROOT/cmdline-tools/latest"
+          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_ROOT/platform-tools" >> "$GITHUB_PATH"
+          export ANDROID_HOME="$ANDROID_ROOT"
+          export PATH="$ANDROID_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
 
-      # ==========================================
-      # STEP 4: Setup Flutter
-      # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          flutter-version: "3.27.4"
+          channel: stable
           cache: true
-          cache-key: 'flutter'
-          cache-path: ${{ runner.tool_cache }}/flutter
 
-      # ==========================================
-      # STEP 5: Download Project ZIP
-      # ==========================================
-      - name: Download Project ZIP
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          JOB_ID: ${{ github.event.client_payload.jobId }}
-          ASSET_ID: ${{ github.event.client_payload.assetId }}
+      - name: Locate Flutter project
+        id: proj
         run: |
-          echo "Job ID: $JOB_ID"
-          echo "Asset ID: $ASSET_ID"
-          
-          # Download ZIP from GitHub Release
-          DOWNLOAD_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/${ASSET_ID}"
-          
-          curl -sL \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/octet-stream" \
-            -o project.zip \
-            "$DOWNLOAD_URL"
-          
-          # Verify download
-          if [ ! -f project.zip ] || [ ! -s project.zip ]; then
-            echo "❌ Failed to download project ZIP"
-            exit 1
-          fi
-          
-          echo "✅ Downloaded project.zip ($(du -h project.zip | cut -f1))"
-          
-          # Extract ZIP
-          unzip -q project.zip -d project_src
-          
-          # Find pubspec.yaml
+          set -e
           if [ -f project_src/pubspec.yaml ]; then
-            echo "✅ Found pubspec.yaml at root"
+            echo "dir=project_src" >> "$GITHUB_OUTPUT"
           else
-            FOUND=$(find project_src -name "pubspec.yaml" -type f 2>/dev/null | head -1)
+            FOUND=$(find project_src -name pubspec.yaml -type f | head -1)
             if [ -z "$FOUND" ]; then
-              echo "❌ ERROR: pubspec.yaml not found!"
-              echo "Files in project_src:"
-              find project_src -maxdepth 3 -type f | head -30
+              echo "pubspec.yaml not found"
+              find project_src -maxdepth 4 -type f | head -80
               exit 1
             fi
-            echo "✅ Found pubspec.yaml at: $FOUND"
-            mv "$(dirname "$FOUND")"/* project_src/
+            echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      # ==========================================
-      # STEP 6: FIX pubspec.yaml (ANTI ERROR)
-      # ==========================================
-      - name: Fix pubspec.yaml
+      - name: Pub get
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          cd project_src
-          
-          # Backup original
-          cp pubspec.yaml pubspec.yaml.bak
-          
-          # Run Python fixer
-          python3 << 'PYEOF'
-import re
-import pathlib
-import sys
-
-p = pathlib.Path("pubspec.yaml")
-
-if not p.exists():
-    print("❌ pubspec.yaml not found!")
-    sys.exit(1)
-
-t = p.read_text(encoding="utf-8", errors="ignore")
-original = t
-fixes = []
-
-# 1. Get project name
-name_match = re.search(r'^name:\s*(\S+)', t, re.MULTILINE)
-if not name_match:
-    print("❌ No project name found!")
-    sys.exit(1)
-
-project_name = name_match.group(1)
-print(f"📦 Project name: {project_name}")
-
-# 2. Remove self-referencing dependency
-pattern = rf'^  {re.escape(project_name)}:\s*[^\n]*\n'
-t, removed = re.subn(pattern, '', t, flags=re.MULTILINE)
-if removed:
-    fixes.append(f"Removed self-reference: {project_name}")
-    print(f"✅ Removed self-referencing dependency")
-
-# 3. Fix SDK constraint - remove escape characters
-t = re.sub(
-    r'sdk:\s*\\*["\']>=([0-9.]+)\s*<([0-9.]+)\\*["\']',
-    r'sdk: ">=\1 <\2"',
-    t
-)
-
-# Also fix already broken format like: sdk: \">=3.0.0 <4.0.0\"
-t = t.replace('sdk: \\">=3.0.0 <4.0.0\\"', 'sdk: ">=3.0.0 <4.0.0"')
-t = t.replace("sdk: \\'>=3.0.0 <4.0.0\\'", "sdk: '>=3.0.0 <4.0.0'")
-
-# 4. Ensure SDK constraint exists
-if 'sdk:' not in t:
-    print("⚠️ No SDK constraint found, adding...")
-    t = re.sub(
-        r'(name:\s*\S+\n)',
-        r'\1\nenvironment:\n  sdk: ">=3.0.0 <4.0.0"\n',
-        t,
-        count=1
-    )
-    fixes.append("Added SDK constraint")
-
-# 5. Clean up formatting
-t = re.sub(r' +$', '', t, flags=re.MULTILINE)  # Remove trailing spaces
-t = re.sub(r'\n{3,}', '\n\n', t)               # Max 2 consecutive newlines
-if not t.endswith('\n'):
-    t += '\n'
-
-# Save if changed
-if t != original:
-    p.write_text(t, encoding="utf-8")
-    print(f"\n✅ pubspec.yaml FIXED! ({len(fixes)} fixes)")
-    for f in fixes:
-        print(f"   • {f}")
-else:
-    print("\n✅ pubspec.yaml already clean!")
-
-# Verify
-print("\n=== VERIFICATION ===")
-content = p.read_text(encoding="utf-8")
-checks = [
-    ("No self-reference", f"{project_name}:" not in content.split("dependencies:")[-1]),
-    ("SDK constraint present", "sdk:" in content),
-    ("No escape chars", '\\"' not in content),
-]
-all_ok = True
-for name, passed in checks:
-    status = "✅" if passed else "❌"
-    print(f"{status} {name}")
-    if not passed:
-        all_ok = False
-
-if not all_ok:
-    sys.exit(1)
-
-print("\n=== FINAL pubspec.yaml ===")
-print(content)
-PYEOF
-
-      # ==========================================
-      # STEP 7: Setup local.properties
-      # ==========================================
-      - name: Setup local.properties
-        run: |
-          cd project_src
-          cat > android/local.properties << EOF
-          flutter.sdk=${FLUTTER_ROOT}
-          sdk.dir=${ANDROID_SDK_ROOT}
-          EOF
-          cat android/local.properties
-
-      # ==========================================
-      # STEP 8: Clean & Get Dependencies
-      # ==========================================
-      - name: Clean & Get Dependencies
-        run: |
-          cd project_src
+          set -e
+          if [ -f pubspec.yaml ]; then
+            # Longgarkan sdk constraint dengan sed (tanpa escape rusak)
+            sed -i -E "s/^([[:space:]]*sdk:)[[:space:]]*.*/\1 '>=3.0.0 <4.0.0'/" pubspec.yaml || true
+            echo "--- environment ---"
+            grep -A5 "^environment:" pubspec.yaml || true
+          fi
           rm -f pubspec.lock
           flutter pub get
 
-      # ==========================================
-      # STEP 9: Build APK Release
-      # ==========================================
-      - name: Build APK Release
+
+
+
+      - name: Upgrade Gradle wrapper
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          cd project_src
-          
-          # Build with error handling
-          set +e
-          flutter build apk --release 2>&1 | tee build.log
-          BUILD_STATUS=${PIPESTATUS[0]}
           set -e
-          
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "❌ Build failed! Last 100 lines of log:"
-            tail -100 build.log
-            exit 1
+          WP="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$WP" ]; then
+            sed -i 's|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip|' "$WP"
+            echo "Gradle wrapper -> 8.11.1"
+            cat "$WP"
           fi
-          
-          echo "✅ Build successful!"
+          mkdir -p android
+          GP="android/gradle.properties"
+          touch "$GP"
+          grep -q 'android.defaults.buildfeatures.buildconfig' "$GP" 2>/dev/null || echo 'android.defaults.buildfeatures.buildconfig=true' >> "$GP"
+          grep -q 'android.nonTransitiveRClass' "$GP" 2>/dev/null || echo 'android.nonTransitiveRClass=false' >> "$GP"
 
-      # ==========================================
-      # STEP 10: Verify & Upload APK
-      # ==========================================
-      - name: Verify & Upload APK
+      - name: Prepare Android local.properties
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          cd project_src
-          
-          # Find APK
-          APK_PATH=""
-          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
-            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
-          else
-            APK_PATH=$(find build -name "*.apk" -type f 2>/dev/null | head -1)
+          set -e
+          {
+            echo "flutter.sdk=${FLUTTER_ROOT}"
+            echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          } > android/local.properties
+          cat android/local.properties
+
+      - name: Build APK release
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          flutter pub get
+          flutter precache --android || true
+          set +e
+          flutter build apk --release > /tmp/flutter_build.log 2>&1
+          BUILD_RC=$?
+          set -e
+          tail -100 /tmp/flutter_build.log || true
+          APK=""
+          if [ -d build/app/outputs/flutter-apk ]; then
+            APK=$(find build/app/outputs/flutter-apk -name "*.apk" -type f 2>/dev/null | head -1 || true)
           fi
-          
-          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
-            echo "❌ APK not found!"
+          if [ -z "$APK" ]; then
+            APK=$(find build -name "*.apk" -type f 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$APK" ] || [ "$BUILD_RC" -ne 0 ]; then
+            echo "BUILD FAILED rc=$BUILD_RC"
+            tail -250 /tmp/flutter_build.log || true
             exit 1
           fi
-          
-          echo "✅ APK found: $APK_PATH"
-          ls -lh "$APK_PATH"
-          
-          # Copy to workspace root
-          cp "$APK_PATH" "$GITHUB_WORKSPACE/app-release.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/app-release.apk"
+          ls -lh "$GITHUB_WORKSPACE/app-release.apk"
 
-      # ==========================================
-      # STEP 11: Upload Artifact
-      # ==========================================
-      - name: Upload APK Artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-${{ github.event.client_payload.jobId || 'manual' }}
+          name: apk-${{ steps.meta.outputs.job_id }}
           path: app-release.apk
-          retention-days: 7
-          compression-level: 0
-
-      # ==========================================
-      # STEP 12: Upload Fixed Project (for debugging)
-      # ==========================================
-      - name: Upload Fixed Project
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: project-fixed-${{ github.event.client_payload.jobId || 'manual' }}
-          path: |
-            project_src/pubspec.yaml
-            project_src/pubspec.yaml.bak
-          retention-days: 7
+          if-no-files-found: error
+          retention-days: 3
