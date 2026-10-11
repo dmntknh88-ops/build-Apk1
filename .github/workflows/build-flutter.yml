@@ -16,7 +16,7 @@ on:
         required: true
         type: string
   repository_dispatch:
-    types: [web2apk-build-flutter]
+    types: [web2apk-build-flutter, web2apk-build]
 
 env:
   JAVA_VERSION: '17'
