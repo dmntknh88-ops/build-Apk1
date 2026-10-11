@@ -286,7 +286,14 @@ jobs:
               for m in re.finditer(r"package:([a-zA-Z0-9_]+)/", txt):
                   pkgs.add(m.group(1))
 
-          missing = sorted(p for p in pkgs if p not in declared)
+          name_m = re.search(r"^name:\s*([\w]+)", pub, re.M)
+          self_name = name_m.group(1) if name_m else ""
+          # Jangan add package name sendiri (import package:otax/...)
+          missing = sorted(p for p in pkgs if p not in declared and p != self_name)
+          # Hapus self-dep jika sempat tertulis
+          if self_name:
+              pub = re.sub(rf"^\s*{re.escape(self_name)}:\s*.*$", "", pub, flags=re.M)
+              pub_path.write_text(pub, encoding="utf-8")
           # Relax environment sdk constraint to match installed Dart
           pub = re.sub(
               r"(environment:\s*\n\s*sdk:\s*)[^\n]+",
@@ -330,6 +337,12 @@ jobs:
                   inserted = True
               pub_path.write_text("".join(out), encoding="utf-8")
               print("pubspec.yaml updated with:", missing)
+              # strip accidental self dependency
+              pub2 = pub_path.read_text(encoding="utf-8", errors="ignore")
+              if self_name:
+                  pub2 = re.sub(rf"^\s*{re.escape(self_name)}:\s*.*$\n?", "", pub2, flags=re.M)
+                  pub_path.write_text(pub2, encoding="utf-8")
+              print("strip self after add")
 
           # Clean lock and resolve
           lock = root / "pubspec.lock"
