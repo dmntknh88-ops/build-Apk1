@@ -22,7 +22,7 @@ on:
 
 env:
   JAVA_VERSION: "17"
-  FLUTTER_VERSION: "3.27.4"
+  FLUTTER_VERSION: "stable"
   ANDROID_API_LEVEL: "34"
   ANDROID_BUILD_TOOLS: "34.0.0"
 
@@ -214,9 +214,9 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
 
       - name: Locate Flutter project
         id: proj
@@ -234,9 +234,132 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Pub get
+      - name: Pub get (soft — fixer will resolve)
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: flutter pub get
+        continue-on-error: true
+        run: |
+          set +e
+          rm -f pubspec.lock
+          flutter pub get || true
+
+
+
+
+      - name: Pubspec fixer (auto missing deps + pub get)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import os, re, subprocess, pathlib, sys
+          root = pathlib.Path(".").resolve()
+          pub_path = root / "pubspec.yaml"
+          if not pub_path.exists():
+              print("NO pubspec.yaml"); sys.exit(1)
+          pub = pub_path.read_text(encoding="utf-8", errors="ignore")
+
+          # Collect declared deps under dependencies: and dev_dependencies:
+          declared = set()
+          section = None
+          for line in pub.splitlines():
+              if re.match(r"^dependencies\s*:", line):
+                  section = "dep"; continue
+              if re.match(r"^dev_dependencies\s*:", line):
+                  section = "dev"; continue
+              if re.match(r"^[a-zA-Z_]", line) and not line.startswith(" "):
+                  section = None; continue
+              if section in ("dep", "dev"):
+                  m = re.match(r"^\s{2}([a-zA-Z0-9_]+)\s*:", line)
+                  if m:
+                      declared.add(m.group(1))
+          declared |= {"flutter", "flutter_test", "flutter_lints", "cupertino_icons", "meta", "collection", "path", "async", "vector_math", "characters", "material_color_utilities", "sky_engine"}
+
+          # Scan package imports from dart sources
+          pkgs = set()
+          for f in root.rglob("*.dart"):
+              s = str(f)
+              if "/.dart_tool/" in s or "/build/" in s:
+                  continue
+              try:
+                  txt = f.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              for m in re.finditer(r"package:([a-zA-Z0-9_]+)/", txt):
+                  pkgs.add(m.group(1))
+
+          missing = sorted(p for p in pkgs if p not in declared)
+          # Relax environment sdk constraint to match installed Dart
+          pub = re.sub(
+              r"(environment:\s*\n\s*sdk:\s*)[^\n]+",
+              r"\1'>=3.0.0 <4.0.0'",
+              pub,
+              count=1,
+          )
+          if "environment:" in pub and "sdk:" not in pub.split("environment:")[1].split("\n\n")[0]:
+              pass
+          pub_path.write_text(pub, encoding="utf-8")
+          print("sdk constraint relaxed to >=3.0.0 <4.0.0")
+          print("=== PUBSPEC FIXER ===")
+          print("imported:", sorted(pkgs))
+          print("missing:", missing)
+
+          # Append missing into dependencies: block if not present
+          if missing:
+              lines = pub.splitlines(keepends=True)
+              out = []
+              in_dep = False
+              dep_indent_done = False
+              inserted = False
+              for line in lines:
+                  if re.match(r"^dependencies\s*:", line):
+                      in_dep = True
+                      out.append(line)
+                      continue
+                  if in_dep and re.match(r"^[a-zA-Z_]", line) and not line.startswith(" "):
+                      # end of dependencies — insert missing before leaving
+                      if not inserted:
+                          for pkg in missing:
+                              out.append(f"  {pkg}: any\n")
+                          inserted = True
+                      in_dep = False
+                      out.append(line)
+                      continue
+                  out.append(line)
+              if in_dep and not inserted:
+                  for pkg in missing:
+                      out.append(f"  {pkg}: any\n")
+                  inserted = True
+              pub_path.write_text("".join(out), encoding="utf-8")
+              print("pubspec.yaml updated with:", missing)
+
+          # Clean lock and resolve
+          lock = root / "pubspec.lock"
+          if lock.exists():
+              lock.unlink()
+          r = subprocess.run(["flutter", "pub", "get"], capture_output=True, text=True)
+          print(r.stdout[-1500:] if r.stdout else "")
+          if r.returncode != 0:
+              print(r.stderr[-1500:] if r.stderr else "")
+              # retry one by one with flutter pub add
+              for pkg in missing:
+                  print("retry pub add", pkg)
+                  subprocess.run(["flutter", "pub", "add", pkg], capture_output=True, text=True)
+              r2 = subprocess.run(["flutter", "pub", "get"], capture_output=True, text=True)
+              print(r2.stdout[-800:] if r2.stdout else "")
+              if r2.returncode != 0:
+                  print(r2.stderr[-800:] if r2.stderr else "")
+          print("=== FIXER DONE ===")
+          PY
+
+      - name: Pack fixed project ZIP
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -eu
+          cd ..
+          # project dir name
+          BASE=$(basename "${{ steps.proj.outputs.dir }}")
+          zip -qr "$GITHUB_WORKSPACE/project-fixed.zip" "$BASE" \
+            -x "$BASE/.dart_tool/*" -x "$BASE/build/*" -x "$BASE/.idea/*" -x "$BASE/android/.gradle/*" || true
+          ls -lh "$GITHUB_WORKSPACE/project-fixed.zip" || true
 
       - name: Prepare Android local.properties
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -286,3 +409,12 @@ jobs:
           path: app-release.apk
           if-no-files-found: error
           retention-days: 3
+
+      - name: Upload fixed project ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-zip-${{ steps.meta.outputs.job_id }}
+          path: project-fixed.zip
+          if-no-files-found: ignore
+          retention-days: 2
