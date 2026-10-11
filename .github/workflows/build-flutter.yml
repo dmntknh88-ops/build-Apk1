@@ -105,7 +105,7 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           REPO_NAME: ${{ steps.meta.outputs.repo }}
         run: |
-          set -euo pipefail
+          set -eu
           mkdir -p project_src
           REPO="${REPO_NAME:-$GITHUB_REPOSITORY}"
           TAG="${RELEASE_TAG:-}"
@@ -175,15 +175,16 @@ jobs:
 
           echo "ZIP OK size=$(stat -c%s project.zip)"
           unzip -q project.zip -d project_src
-          ND=$(find project_src -mindepth 1 -maxdepth 1 -type d | wc -l)
-          NF=$(find project_src -mindepth 1 -maxdepth 1 -type f | wc -l)
+          ND=$(find project_src -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || echo 0)
+          NF=$(find project_src -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l || echo 0)
           if [ "$ND" -eq 1 ] && [ "$NF" -eq 0 ]; then
             ROOT=$(find project_src -mindepth 1 -maxdepth 1 -type d | head -1)
             mv "$ROOT"/* project_src/ 2>/dev/null || true
             mv "$ROOT"/.[!.]* project_src/ 2>/dev/null || true
             rmdir "$ROOT" 2>/dev/null || true
           fi
-          find project_src -maxdepth 3 -type f | head -40
+          find project_src -maxdepth 3 -type f 2>/dev/null | head -40 || true
+          echo "project files listed OK"
 
       - name: Setup Java
         uses: actions/setup-java@v4
