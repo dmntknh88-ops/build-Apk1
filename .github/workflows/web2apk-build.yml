@@ -247,48 +247,22 @@ jobs:
               print("no pubspec")
               raise SystemExit(0)
           t = p.read_text(encoding="utf-8", errors="ignore")
-          orig = t
-
-          # Ensure dependency_overrides exists with web pin (share_plus vs record_web)
-          if "dependency_overrides:" not in t:
-              t = t.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n"
-              print("added dependency_overrides web")
-          else:
-              # ensure web override
-              if re.search(r"^  web:", t, re.M) is None or "web:" not in t.split("dependency_overrides:")[-1][:400]:
-                  t = re.sub(
-                      r"(dependency_overrides:\s*\n)",
-                      r"\1  web: ^1.0.0\n",
-                      t,
-                      count=1,
-                  )
-                  print("ensured web override")
-
-          # Soft-pin record if locked to conflicting record_web
-          # record: 6.0.0 often pulls record_web 1.1.0
+          # Hanya override web — JANGAN ubah record / record_linux / record_platform
+          # (pin record ke 5.x sebelumnya memicu error RecordLinux missing members)
           t2 = re.sub(
-              r"^(\s*record\s*:\s*)[^\n]+",
-              r"\1^5.1.2",
+              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
+              "\n",
               t,
-              flags=re.M,
+              count=1,
           )
-          # only apply if share_plus present (conflict pattern)
-          if "share_plus" in t and "record:" in t:
-              if t2 != t:
-                  t = t2
-                  print("soft-pinned record to ^5.1.2 for share_plus compatibility")
-
-          # Also relax share_plus upper if needed
-          # leave as-is; web override usually enough
-
-          if t != orig:
-              p.write_text(t, encoding="utf-8")
-              print("pubspec conflict fixes applied")
-          else:
-              print("no conflict edits needed")
-          print("--- overrides ---")
-          print(p.read_text(encoding="utf-8", errors="ignore").split("dependency_overrides:")[-1][:300] if "dependency_overrides:" in p.read_text(encoding="utf-8", errors="ignore") else "none")
+          block = "\ndependency_overrides:\n  web: ^1.0.0\n"
+          t2 = t2.rstrip() + "\n" + block
+          p.write_text(t2, encoding="utf-8")
+          print("dependency_overrides: web ^1.0.0 only")
+          print("--- tail ---")
+          print("\n".join(t2.splitlines()[-12:]))
           PY
+          rm -f pubspec.lock
 
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
