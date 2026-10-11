@@ -239,13 +239,49 @@ jobs:
         run: |
           set -e
           if [ -f pubspec.yaml ]; then
-            # Longgarkan sdk constraint dengan sed (tanpa escape rusak)
-            sed -i -E "s/^([[:space:]]*sdk:)[[:space:]]*.*/\1 '>=3.0.0 <4.0.0'/" pubspec.yaml || true
+            python3 <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("pubspec.yaml")
+          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+          out = []
+          in_env = False
+          sdk_done = False
+          for line in lines:
+              if re.match(r"^environment\s*:", line):
+                  in_env = True
+                  sdk_done = False
+                  out.append(line)
+                  continue
+              if in_env:
+                  # left environment block when a top-level key appears
+                  if re.match(r"^[a-zA-Z_]", line):
+                      if not sdk_done:
+                          out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                          sdk_done = True
+                      in_env = False
+                      out.append(line)
+                      continue
+                  if re.match(r"^\s+sdk\s*:", line):
+                      out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                      sdk_done = True
+                      continue
+                  out.append(line)
+                  continue
+              out.append(line)
+          if in_env and not sdk_done:
+              out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+          p.write_text("".join(out), encoding="utf-8")
+          print("environment sdk fixed")
+          PY
             echo "--- environment ---"
-            grep -A5 "^environment:" pubspec.yaml || true
+            grep -A6 "^environment:" pubspec.yaml || true
+            echo "--- flutter dep ---"
+            grep -A2 "^  flutter:" pubspec.yaml || true
           fi
           rm -f pubspec.lock
           flutter pub get
+
 
 
 
