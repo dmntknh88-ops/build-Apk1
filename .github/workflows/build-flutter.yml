@@ -234,7 +234,7 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Pub get (soft — fixer will resolve)
+      - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         continue-on-error: true
         run: |
@@ -245,17 +245,6 @@ jobs:
 
 
 
-      - name: Pubspec fixer (auto missing deps + pub get)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -eu
-          python3 - <<'PY'
-          import os, re, subprocess, pathlib, sys
-          root = pathlib.Path(".").resolve()
-          pub_path = root / "pubspec.yaml"
-          if not pub_path.exists():
-              print("NO pubspec.yaml"); sys.exit(1)
-          pub = pub_path.read_text(encoding="utf-8", errors="ignore")
 
           # Collect declared deps under dependencies: and dev_dependencies:
           declared = set()
@@ -363,16 +352,29 @@ jobs:
           print("=== FIXER DONE ===")
           PY
 
-      - name: Pack fixed project ZIP
+
+
+      - name: Upgrade Gradle wrapper (Flutter 3.47+ needs >=8.14)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -eu
-          cd ..
-          # project dir name
-          BASE=$(basename "${{ steps.proj.outputs.dir }}")
-          zip -qr "$GITHUB_WORKSPACE/project-fixed.zip" "$BASE" \
-            -x "$BASE/.dart_tool/*" -x "$BASE/build/*" -x "$BASE/.idea/*" -x "$BASE/android/.gradle/*" || true
-          ls -lh "$GITHUB_WORKSPACE/project-fixed.zip" || true
+          WP="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$WP" ]; then
+            sed -i 's|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.2-all.zip|' "$WP"
+            echo "Gradle wrapper -> 8.14.2"
+            cat "$WP"
+          else
+            echo "No gradle-wrapper.properties"
+            find android -name "gradle-wrapper.properties" 2>/dev/null || true
+          fi
+          # gradle.properties: avoid AGP9 newDsl hard-fail on older projects
+          GP="android/gradle.properties"
+          mkdir -p android
+          touch "$GP"
+          grep -q 'android.defaults.buildfeatures.buildconfig' "$GP" || echo 'android.defaults.buildfeatures.buildconfig=true' >> "$GP"
+          grep -q 'android.nonTransitiveRClass' "$GP" || echo 'android.nonTransitiveRClass=false' >> "$GP"
+          # opt out newDsl if property exists in newer AGP
+          grep -q 'android.newDsl' "$GP" || echo 'android.newDsl=false' >> "$GP" || true
 
       - name: Prepare Android local.properties
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -395,7 +397,7 @@ jobs:
 
           # Build (log ke file tanpa pipefail)
           set +e
-          flutter build apk --release > /tmp/flutter_build.log 2>&1
+          flutter build apk --release --android-skip-build-dependency-validation > /tmp/flutter_build.log 2>&1
           BUILD_RC=$?
           set -e
           tail -80 /tmp/flutter_build.log || true
@@ -423,11 +425,3 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload fixed project ZIP
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fixed-zip-${{ steps.meta.outputs.job_id }}
-          path: project-fixed.zip
-          if-no-files-found: ignore
-          retention-days: 2
