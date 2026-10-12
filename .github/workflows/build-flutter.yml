@@ -304,14 +304,13 @@ jobs:
           # Override aman: web + record stack (hindari record_linux vs platform_interface mismatch)
           # Root cause record: record_platform_interface 1.6.x vs record_linux 0.7.2 API mismatch
           # Pin platform_interface + coherent record 5.2.x stack (Android APK aman)
-          overrides = """
-dependency_overrides:
-  web: ^1.0.0
-  record_platform_interface: 1.2.0
-  record_linux: 0.4.1
-  record: 5.1.2
-"""
-          # Paksa dependency record di dependencies: ke 5.1.2 jika ada
+          overrides = (
+              "\ndependency_overrides:\n"
+              "  web: ^1.0.0\n"
+              "  record_platform_interface: 1.2.0\n"
+              "  record_linux: 0.4.1\n"
+              "  record: 5.1.2\n"
+          )
           text2 = re.sub(
               r"^([ \t]+record\s*:\s*).*$",
               r"\g<1>5.1.2",
