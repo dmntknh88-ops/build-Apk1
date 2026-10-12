@@ -22,7 +22,7 @@ on:
 
 env:
   JAVA_VERSION: "17"
-  FLUTTER_VERSION: "3.27.4"
+  FLUTTER_VERSION: "3.32.8"
   ANDROID_API_LEVEL: "34"
   ANDROID_BUILD_TOOLS: "34.0.0"
 
@@ -214,7 +214,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.27.4"
+          flutter-version: "3.32.8"
           channel: stable
           cache: true
 
@@ -234,6 +234,52 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
+
+
+      - name: Relax Dart SDK constraint (support all base ZIP)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("pubspec.yaml")
+          if not p.exists():
+              print("no pubspec")
+              raise SystemExit(0)
+          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+          out = []
+          in_env = False
+          sdk_done = False
+          for line in lines:
+              if re.match(r"^environment\s*:", line):
+                  in_env = True
+                  sdk_done = False
+                  out.append(line)
+                  continue
+              if in_env:
+                  if re.match(r"^[a-zA-Z_]", line):
+                      if not sdk_done:
+                          out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                          sdk_done = True
+                      in_env = False
+                      out.append(line)
+                      continue
+                  if re.match(r"^\s+sdk\s*:", line):
+                      out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                      sdk_done = True
+                      continue
+                  out.append(line)
+                  continue
+              out.append(line)
+          if in_env and not sdk_done:
+              out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+          p.write_text("".join(out), encoding="utf-8")
+          print("environment sdk -> >=3.0.0 <4.0.0")
+          PY
+          echo "--- environment ---"
+          grep -A6 "^environment:" pubspec.yaml || true
+          rm -f pubspec.lock
 
       - name: Fix dependency conflicts
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -406,7 +452,7 @@ jobs:
           print("pubspec updated")
           PY
           rm -f pubspec.lock
-          flutter pub get
+          echo "deps scanned (pub get di step berikutnya)"
 
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
