@@ -602,26 +602,43 @@ jobs:
           cat android/local.properties
 
 
-      - name: Force minSdkVersion 24 (all plugins)
+      - name: Force minSdkVersion 24 (hardcode, not flutter.minSdkVersion)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
           python3 <<'PY'
           from pathlib import Path
           import re
-
           MIN = 24
 
-          def patch_text(t: str) -> str:
-              # Groovy
+          def patch(t: str) -> str:
+              # CRITICAL: replace flutter.minSdkVersion references with literal int
+              t = re.sub(
+                  r"minSdk\s*=\s*flutter\.minSdkVersion",
+                  f"minSdk = {MIN}",
+                  t,
+              )
+              t = re.sub(
+                  r"minSdkVersion\s*=\s*flutter\.minSdkVersion",
+                  f"minSdkVersion = {MIN}",
+                  t,
+              )
+              t = re.sub(
+                  r"minSdkVersion\s+flutter\.minSdkVersion",
+                  f"minSdkVersion {MIN}",
+                  t,
+              )
+              t = re.sub(
+                  r"minSdk\s*\(\s*flutter\.minSdkVersion\s*\)",
+                  f"minSdk({MIN})",
+                  t,
+              )
+              # Numeric forms
               t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
-              t = re.sub(r"minSdk\s+\d+", f"minSdk {MIN}", t)
               t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
-              # Kotlin DSL
+              t = re.sub(r"minSdk\s+\d+", f"minSdk {MIN}", t)
               t = re.sub(r"minSdkVersion\.set\(\d+\)", f"minSdkVersion.set({MIN})", t)
               t = re.sub(r"minSdk\.set\(\d+\)", f"minSdk.set({MIN})", t)
-              # flutter.minSdkVersion references stay; we override the property
-              # AndroidManifest uses-sdk
               t = re.sub(
                   r'android:minSdkVersion\s*=\s*"\d+"',
                   f'android:minSdkVersion="{MIN}"',
@@ -629,82 +646,77 @@ jobs:
               )
               return t
 
-          roots = list(Path(".").rglob("build.gradle")) + list(Path(".").rglob("build.gradle.kts"))
-          roots += list(Path(".").rglob("AndroidManifest.xml"))
-          for f in roots:
-              if any(x in str(f) for x in [".dart_tool", "build/", ".pub-cache", "third_party"]):
+          files = (
+              list(Path("android").rglob("*.gradle"))
+              + list(Path("android").rglob("*.gradle.kts"))
+              + list(Path("android").rglob("AndroidManifest.xml"))
+          )
+          for f in files:
+              if "build/" in str(f):
                   continue
               try:
                   orig = f.read_text(encoding="utf-8", errors="ignore")
               except Exception:
                   continue
-              neo = patch_text(orig)
+              neo = patch(orig)
               if neo != orig:
                   f.write_text(neo, encoding="utf-8")
                   print("patched", f)
 
-          # Force flutter.minSdkVersion in properties files
           for prop in [Path("android/local.properties"), Path("android/gradle.properties")]:
               prop.parent.mkdir(parents=True, exist_ok=True)
-              if prop.exists():
-                  txt = prop.read_text(encoding="utf-8", errors="ignore")
-              else:
-                  txt = ""
-              lines = [ln for ln in txt.splitlines() if not ln.strip().startswith("flutter.minSdkVersion")]
+              txt = prop.read_text(encoding="utf-8", errors="ignore") if prop.exists() else ""
+              lines = []
+              for ln in txt.splitlines():
+                  low = ln.lower().replace(" ", "")
+                  if "flutter.minsdkversion" in low or "android.minsdkversion" in low:
+                      continue
+                  if low.startswith("minsdkversion="):
+                      continue
+                  lines.append(ln)
               lines.append(f"flutter.minSdkVersion={MIN}")
-              # also plain minSdk
-              lines = [ln for ln in lines if not ln.strip().startswith("minSdkVersion=") and not ln.strip().startswith("android.minSdkVersion=")]
               lines.append(f"android.minSdkVersion={MIN}")
               prop.write_text("\n".join(lines) + "\n", encoding="utf-8")
-              print("props", prop, "minSdk", MIN)
+              print("props", prop)
 
-          # Ensure defaultConfig block exists with minSdk if missing in app build.gradle
-          for app_g in [Path("android/app/build.gradle"), Path("android/app/build.gradle.kts")]:
-              if not app_g.exists():
-                  continue
-              txt = app_g.read_text(encoding="utf-8", errors="ignore")
-              if "minSdk" not in txt and "minSdkVersion" not in txt:
-                  # inject into defaultConfig if present
-                  if "defaultConfig" in txt:
-                      txt2 = re.sub(
-                          r"(defaultConfig\s*\{)",
-                          f"\\1\n        minSdkVersion {MIN}\n",
-                          txt,
-                          count=1,
-                      )
-                      app_g.write_text(txt2, encoding="utf-8")
-                      print("injected minSdk into", app_g)
-              else:
-                  # already patched by patch_text
-                  pass
-
-          print("minSdk force done ->", MIN)
+          # Verify app build file
+          for app in [Path("android/app/build.gradle"), Path("android/app/build.gradle.kts")]:
+              if app.exists():
+                  print("---", app, "---")
+                  print(app.read_text(encoding="utf-8", errors="ignore")[:800])
+          print("minSdk hardcode done", MIN)
           PY
-          echo "=== verify minSdk ==="
-          grep -rn "minSdk" android/ --include="*.gradle" --include="*.kts" --include="*.properties" --include="*.xml" 2>/dev/null | head -40 || true
+          echo "=== verify ==="
+          grep -rn "minSdk" android/app/ --include="*.gradle" --include="*.kts" 2>/dev/null | head -20 || true
 
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          # Final minSdk hammer (record_android / flutter_tts need >=23)
-          python3 -c "
+          python3 <<'PY'
           from pathlib import Path
           import re
-          MIN=24
-          for f in list(Path('android').rglob('build.gradle'))+list(Path('android').rglob('build.gradle.kts')):
-              t=f.read_text(encoding='utf-8', errors='ignore')
-              n=re.sub(r'minSdkVersion\s+\d+', f'minSdkVersion {MIN}', t)
-              n=re.sub(r'minSdk\s*=\s*\d+', f'minSdk = {MIN}', n)
-              n=re.sub(r'minSdk\s+\d+', f'minSdk {MIN}', n)
-              if n!=t: f.write_text(n, encoding='utf-8'); print('repatch', f)
-          for prop in [Path('android/local.properties'), Path('android/gradle.properties')]:
-              if not prop.exists(): continue
-              lines=[l for l in prop.read_text().splitlines() if 'minSdk' not in l.lower() or 'sdk.dir' in l or 'flutter.sdk' in l]
-              lines.append(f'flutter.minSdkVersion={MIN}')
-              prop.write_text(chr(10).join(lines)+chr(10))
-          print('pre-build minSdk=24')
-          "
+          MIN = 24
+          def patch(t):
+              t = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", f"minSdk = {MIN}", t)
+              t = re.sub(r"minSdkVersion\s+flutter\.minSdkVersion", f"minSdkVersion {MIN}", t)
+              t = re.sub(r"minSdkVersion\s*=\s*flutter\.minSdkVersion", f"minSdkVersion = {MIN}", t)
+              t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
+              t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
+              return t
+          for f in list(Path("android").rglob("*.gradle")) + list(Path("android").rglob("*.gradle.kts")):
+              if "build/" in str(f):
+                  continue
+              try:
+                  o = f.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              n = patch(o)
+              if n != o:
+                  f.write_text(n, encoding="utf-8")
+                  print("repatch", f)
+          print("pre-build minSdk hardcode", MIN)
+          PY
           flutter pub get
           flutter precache --android || true
           set +e
