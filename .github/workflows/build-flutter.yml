@@ -602,57 +602,109 @@ jobs:
           cat android/local.properties
 
 
-      - name: Fix minSdk for plugins (flutter_tts etc)
+      - name: Force minSdkVersion 24 (all plugins)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
           python3 <<'PY'
           from pathlib import Path
           import re
-          roots = [
-              Path("android/app/build.gradle"),
-              Path("android/app/build.gradle.kts"),
-              Path("android/local.properties"),
-          ]
-          # Also patch any minSdk in gradle files under android/
-          files = list(Path("android").rglob("build.gradle")) + list(Path("android").rglob("build.gradle.kts"))
-          for f in files:
-              if not f.is_file():
+
+          MIN = 24
+
+          def patch_text(t: str) -> str:
+              # Groovy
+              t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
+              t = re.sub(r"minSdk\s+\d+", f"minSdk {MIN}", t)
+              t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
+              # Kotlin DSL
+              t = re.sub(r"minSdkVersion\.set\(\d+\)", f"minSdkVersion.set({MIN})", t)
+              t = re.sub(r"minSdk\.set\(\d+\)", f"minSdk.set({MIN})", t)
+              # flutter.minSdkVersion references stay; we override the property
+              # AndroidManifest uses-sdk
+              t = re.sub(
+                  r'android:minSdkVersion\s*=\s*"\d+"',
+                  f'android:minSdkVersion="{MIN}"',
+                  t,
+              )
+              return t
+
+          roots = list(Path(".").rglob("build.gradle")) + list(Path(".").rglob("build.gradle.kts"))
+          roots += list(Path(".").rglob("AndroidManifest.xml"))
+          for f in roots:
+              if any(x in str(f) for x in [".dart_tool", "build/", ".pub-cache", "third_party"]):
                   continue
-              t = f.read_text(encoding="utf-8", errors="ignore")
-              orig = t
-              # Groovy: minSdkVersion 21 / minSdk 21
-              t = re.sub(r"minSdkVersion\s+\d+", "minSdkVersion 24", t)
-              t = re.sub(r"minSdk\s*=\s*\d+", "minSdk = 24", t)
-              t = re.sub(r"minSdk\s+\d+", "minSdk 24", t)
-              # Kotlin DSL: minSdk = 21, minSdkVersion.set(21)
-              t = re.sub(r"minSdkVersion\.set\(\d+\)", "minSdkVersion.set(24)", t)
-              t = re.sub(r"minSdk\.set\(\d+\)", "minSdk.set(24)", t)
-              if t != orig:
-                  f.write_text(t, encoding="utf-8")
+              try:
+                  orig = f.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              neo = patch_text(orig)
+              if neo != orig:
+                  f.write_text(neo, encoding="utf-8")
                   print("patched", f)
-          # Ensure flutter.minSdkVersion override via gradle.properties / local.properties
-          lp = Path("android/local.properties")
-          if lp.exists():
-              txt = lp.read_text(encoding="utf-8", errors="ignore")
-              if "flutter.minSdkVersion" not in txt:
-                  with lp.open("a", encoding="utf-8") as fh:
-                      fh.write("\nflutter.minSdkVersion=24\n")
-                  print("local.properties flutter.minSdkVersion=24")
-          gp = Path("android/gradle.properties")
-          if gp.exists():
-              txt = gp.read_text(encoding="utf-8", errors="ignore")
-              if "flutter.minSdkVersion" not in txt:
-                  with gp.open("a", encoding="utf-8") as fh:
-                      fh.write("\nflutter.minSdkVersion=24\n")
-                  print("gradle.properties flutter.minSdkVersion=24")
-          print("minSdk fix done")
+
+          # Force flutter.minSdkVersion in properties files
+          for prop in [Path("android/local.properties"), Path("android/gradle.properties")]:
+              prop.parent.mkdir(parents=True, exist_ok=True)
+              if prop.exists():
+                  txt = prop.read_text(encoding="utf-8", errors="ignore")
+              else:
+                  txt = ""
+              lines = [ln for ln in txt.splitlines() if not ln.strip().startswith("flutter.minSdkVersion")]
+              lines.append(f"flutter.minSdkVersion={MIN}")
+              # also plain minSdk
+              lines = [ln for ln in lines if not ln.strip().startswith("minSdkVersion=") and not ln.strip().startswith("android.minSdkVersion=")]
+              lines.append(f"android.minSdkVersion={MIN}")
+              prop.write_text("\n".join(lines) + "\n", encoding="utf-8")
+              print("props", prop, "minSdk", MIN)
+
+          # Ensure defaultConfig block exists with minSdk if missing in app build.gradle
+          for app_g in [Path("android/app/build.gradle"), Path("android/app/build.gradle.kts")]:
+              if not app_g.exists():
+                  continue
+              txt = app_g.read_text(encoding="utf-8", errors="ignore")
+              if "minSdk" not in txt and "minSdkVersion" not in txt:
+                  # inject into defaultConfig if present
+                  if "defaultConfig" in txt:
+                      txt2 = re.sub(
+                          r"(defaultConfig\s*\{)",
+                          f"\\1\n        minSdkVersion {MIN}\n",
+                          txt,
+                          count=1,
+                      )
+                      app_g.write_text(txt2, encoding="utf-8")
+                      print("injected minSdk into", app_g)
+              else:
+                  # already patched by patch_text
+                  pass
+
+          print("minSdk force done ->", MIN)
           PY
+          echo "=== verify minSdk ==="
+          grep -rn "minSdk" android/ --include="*.gradle" --include="*.kts" --include="*.properties" --include="*.xml" 2>/dev/null | head -40 || true
 
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
+          # Final minSdk hammer (record_android / flutter_tts need >=23)
+          python3 -c "
+          from pathlib import Path
+          import re
+          MIN=24
+          for f in list(Path('android').rglob('build.gradle'))+list(Path('android').rglob('build.gradle.kts')):
+              t=f.read_text(encoding='utf-8', errors='ignore')
+              n=re.sub(r'minSdkVersion\s+\d+', f'minSdkVersion {MIN}', t)
+              n=re.sub(r'minSdk\s*=\s*\d+', f'minSdk = {MIN}', n)
+              n=re.sub(r'minSdk\s+\d+', f'minSdk {MIN}', n)
+              if n!=t: f.write_text(n, encoding='utf-8'); print('repatch', f)
+          for prop in [Path('android/local.properties'), Path('android/gradle.properties')]:
+              if not prop.exists(): continue
+              lines=[l for l in prop.read_text().splitlines() if 'minSdk' not in l.lower() or 'sdk.dir' in l or 'flutter.sdk' in l]
+              lines.append(f'flutter.minSdkVersion={MIN}')
+              prop.write_text(chr(10).join(lines)+chr(10))
+          print('pre-build minSdk=24')
+          "
           flutter pub get
           flutter precache --android || true
           set +e
