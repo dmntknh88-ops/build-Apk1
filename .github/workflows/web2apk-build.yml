@@ -286,27 +286,43 @@ jobs:
         run: |
           set -e
           python3 <<'PY'
+
           from pathlib import Path
           import re
           p = Path("pubspec.yaml")
           if not p.exists():
               print("no pubspec")
               raise SystemExit(0)
-          t = p.read_text(encoding="utf-8", errors="ignore")
-          # Hanya override web — JANGAN ubah record / record_linux / record_platform
-          # (pin record ke 5.x sebelumnya memicu error RecordLinux missing members)
-          t2 = re.sub(
+          text = p.read_text(encoding="utf-8", errors="ignore")
+          # Hapus dependency_overrides lama
+          text = re.sub(
               r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
               "\n",
-              t,
+              text,
               count=1,
           )
-          block = "\ndependency_overrides:\n  web: ^1.0.0\n"
-          t2 = t2.rstrip() + "\n" + block
-          p.write_text(t2, encoding="utf-8")
-          print("dependency_overrides: web ^1.0.0 only")
-          print("--- tail ---")
-          print("\n".join(t2.splitlines()[-12:]))
+          # Override aman: web + record stack (hindari record_linux vs platform_interface mismatch)
+          # Root cause record: record_platform_interface 1.6.x vs record_linux 0.7.2 API mismatch
+          # Pin platform_interface + coherent record 5.2.x stack (Android APK aman)
+          overrides = """
+dependency_overrides:
+  web: ^1.0.0
+  record_platform_interface: 1.2.0
+  record_linux: 0.4.1
+  record: 5.1.2
+"""
+          # Paksa dependency record di dependencies: ke 5.1.2 jika ada
+          text2 = re.sub(
+              r"^([ \t]+record\s*:\s*).*$",
+              r"\g<1>5.1.2",
+              text,
+              flags=re.M,
+          )
+          text2 = text2.rstrip() + "\n" + overrides + "\n"
+          p.write_text(text2, encoding="utf-8")
+          print("dependency_overrides: web + record 5.1.2 + platform_interface 1.2.0")
+          print(overrides)
+
           PY
           rm -f pubspec.lock
 
