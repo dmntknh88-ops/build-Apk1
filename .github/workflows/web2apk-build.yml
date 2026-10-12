@@ -264,6 +264,150 @@ jobs:
           PY
           rm -f pubspec.lock
 
+      - name: Add missing dependencies (safe)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          pub = Path("pubspec.yaml")
+          if not pub.exists():
+              print("no pubspec")
+              raise SystemExit(0)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
+          pkg_name = name_m.group(1) if name_m else ""
+
+          # packages already declared (dependencies + dev_dependencies + overrides)
+          declared = set()
+          for m in re.finditer(r"^\s{2}([a-zA-Z0-9_]+)\s*:", text, re.M):
+              declared.add(m.group(1))
+          declared |= {"flutter", "flutter_test", "flutter_localizations", "sky_engine", "meta", "collection", "vector_math", "typed_data", "characters", "material_color_utilities", "async", "boolean_selector", "clock", "fake_async", "leak_tracker", "leak_tracker_flutter_testing", "leak_tracker_testing", "matcher", "path", "source_span", "stack_trace", "stream_channel", "string_scanner", "term_glyph", "test_api", "vm_service"}
+
+          # scan dart imports
+          imported = set()
+          for dart in Path(".").rglob("*.dart"):
+              if any(x in str(dart) for x in [".dart_tool", "build/", ".pub-cache"]):
+                  continue
+              try:
+                  src = dart.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              for m in re.finditer(r"""package:([a-zA-Z0-9_]+)/""", src):
+                  imported.add(m.group(1))
+
+          missing = sorted(p for p in imported if p not in declared and p != pkg_name)
+          print("imported:", sorted(imported)[:40], "...")
+          print("missing:", missing)
+          if not missing:
+              print("no missing deps")
+              raise SystemExit(0)
+
+          # Known safe version pins for common packages (avoid latest breaking)
+          PINS = {
+              "file_picker": "^8.1.2",
+              "permission_handler": "^11.0.0",
+              "path_provider": "^2.1.1",
+              "shared_preferences": "^2.2.2",
+              "url_launcher": "^6.2.0",
+              "image_picker": "^1.0.7",
+              "http": "^1.2.0",
+              "intl": "^0.19.0",
+              "provider": "^6.1.0",
+              "video_player": "^2.8.0",
+              "audioplayers": "^6.0.0",
+              "web_socket_channel": "^2.4.0",
+              "socket_io_client": "^2.0.3+1",
+              "flutter_overlay_window": "^0.4.5",
+              "device_info_plus": "^10.1.0",
+              "connectivity_plus": "^6.0.0",
+              "battery_plus": "^6.0.0",
+              "geolocator": "^12.0.0",
+              "geocoding": "^3.0.0",
+              "share_plus": "^7.0.0",
+              "open_file": "^3.3.2",
+              "flutter_tts": "^4.0.0",
+              "local_auth": "^2.2.0",
+              "flutter_secure_storage": "^9.0.0",
+              "cached_network_image": "^3.3.0",
+              "shimmer": "^3.0.0",
+              "lottie": "^3.0.0",
+              "flutter_svg": "^2.0.0",
+              "carousel_slider": "^4.2.1",
+              "iconsax": "^0.0.8",
+              "font_awesome_flutter": "^10.7.0",
+              "google_fonts": "^6.1.0",
+              "sqflite": "^2.3.0",
+              "hive": "^2.2.3",
+              "hive_flutter": "^1.1.0",
+              "dio": "^5.4.0",
+              "cookie_jar": "^4.0.8",
+              "flutter_inappwebview": "^6.0.0",
+              "webview_flutter": "^4.7.0",
+              "chewie": "^1.7.0",
+              "just_audio": "^0.9.36",
+              "record": "5.1.2",
+              "camera": "^0.10.5",
+              "qr_code_scanner": "^1.0.1",
+              "mobile_scanner": "^5.0.0",
+              "flutter_local_notifications": "^17.0.0",
+              "awesome_notifications": "^0.9.0",
+              "app_links": "^6.0.0",
+              "uni_links": "^0.5.1",
+              "package_info_plus": "^8.0.0",
+              "wakelock_plus": "^1.1.0",
+              "screen_brightness": "^1.0.0",
+              "volume_controller": "^2.0.0",
+              "flutter_blue_plus": "^1.30.0",
+              "network_info_plus": "^4.1.0",
+              "flutter_webrtc": "^0.12.0",
+              "win32": "^5.0.0",
+          }
+
+          # Insert under dependencies: block
+          lines = text.splitlines(True)
+          out = []
+          in_deps = False
+          deps_indent = "  "
+          inserted = False
+          for i, line in enumerate(lines):
+              out.append(line)
+              if re.match(r"^dependencies:\s*$", line):
+                  in_deps = True
+                  continue
+              if in_deps and re.match(r"^[a-zA-Z]", line):
+                  # left dependencies block — insert before this line
+                  if not inserted:
+                      for pkg in missing:
+                          ver = PINS.get(pkg, "any")
+                          out.insert(-1, f"{deps_indent}{pkg}: {ver}\n")
+                          print(f"add {pkg}: {ver}")
+                      inserted = True
+                  in_deps = False
+              if in_deps and line.strip() == "":
+                  pass
+          if in_deps and not inserted:
+              for pkg in missing:
+                  ver = PINS.get(pkg, "any")
+                  out.append(f"{deps_indent}{pkg}: {ver}\n")
+                  print(f"add {pkg}: {ver}")
+              inserted = True
+
+          if not inserted:
+              # fallback: append dependencies section
+              out.append("\ndependencies:\n")
+              for pkg in missing:
+                  ver = PINS.get(pkg, "any")
+                  out.append(f"  {pkg}: {ver}\n")
+                  print(f"add(fallback) {pkg}: {ver}")
+
+          pub.write_text("".join(out), encoding="utf-8")
+          print("pubspec updated")
+          PY
+          rm -f pubspec.lock
+          flutter pub get
+
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
