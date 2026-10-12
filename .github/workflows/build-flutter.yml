@@ -286,7 +286,6 @@ jobs:
         run: |
           set -e
           python3 <<'PY'
-
           from pathlib import Path
           import re
           p = Path("pubspec.yaml")
@@ -294,34 +293,15 @@ jobs:
               print("no pubspec")
               raise SystemExit(0)
           text = p.read_text(encoding="utf-8", errors="ignore")
-          # Hapus dependency_overrides lama
           text = re.sub(
               r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
               "\n",
               text,
               count=1,
           )
-          # Override aman: web + record stack (hindari record_linux vs platform_interface mismatch)
-          # Root cause record: record_platform_interface 1.6.x vs record_linux 0.7.2 API mismatch
-          # Pin platform_interface + coherent record 5.2.x stack (Android APK aman)
-          overrides = (
-              "\ndependency_overrides:\n"
-              "  web: ^1.0.0\n"
-              "  record_platform_interface: 1.2.0\n"
-              "  record_linux: 0.4.1\n"
-              "  record: 5.1.2\n"
-          )
-          text2 = re.sub(
-              r"^([ \t]+record\s*:\s*).*$",
-              r"\g<1>5.1.2",
-              text,
-              flags=re.M,
-          )
-          text2 = text2.rstrip() + "\n" + overrides + "\n"
-          p.write_text(text2, encoding="utf-8")
-          print("dependency_overrides: web + record 5.1.2 + platform_interface 1.2.0")
-          print(overrides)
-
+          overrides = "\ndependency_overrides:\n  web: ^1.0.0\n"
+          p.write_text(text.rstrip() + "\n" + overrides + "\n", encoding="utf-8")
+          print("dependency_overrides: web only")
           PY
           rm -f pubspec.lock
 
@@ -520,6 +500,80 @@ jobs:
 
 
 
+
+      - name: Stub record_linux (Android-only)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          root = Path("third_party/record_linux_stub")
+          (root / "lib").mkdir(parents=True, exist_ok=True)
+          (root / "pubspec.yaml").write_text(
+              "name: record_linux\n"
+              "version: 1.0.0\n"
+              "publish_to: none\n"
+              "environment:\n"
+              "  sdk: '>=3.0.0 <4.0.0'\n"
+              "dependencies:\n"
+              "  flutter:\n"
+              "    sdk: flutter\n"
+              "  record_platform_interface: any\n",
+              encoding="utf-8",
+          )
+          dart_code = (
+              "import 'dart:async';\n"
+              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
+              "\n"
+              "class RecordLinux extends RecordPlatform {\n"
+              "  static void registerWith() {\n"
+              "    RecordPlatform.instance = RecordLinux();\n"
+              "  }\n"
+              "  @override\n"
+              "  dynamic noSuchMethod(Invocation invocation) {\n"
+              "    final name = invocation.memberName.toString();\n"
+              "    if (name.contains('isSupported') || name.contains('hasPermission') ||\n"
+              "        name.contains('isRecording') || name.contains('isPaused')) {\n"
+              "      return Future<bool>.value(false);\n"
+              "    }\n"
+              "    if (name.contains('listInputDevices')) {\n"
+              "      return Future.value(<InputDevice>[]);\n"
+              "    }\n"
+              "    if (name.contains('onStateChanged') || name.contains('onAmplitudeChanged')) {\n"
+              "      return const Stream.empty();\n"
+              "    }\n"
+              "    if (name.contains('stop')) return Future<String?>.value(null);\n"
+              "    if (name.contains('cancel') || name.contains('dispose') ||\n"
+              "        name.contains('start') || name.contains('create') ||\n"
+              "        name.contains('getAmplitude')) {\n"
+              "      return Future<void>.value();\n"
+              "    }\n"
+              "    try { return super.noSuchMethod(invocation); } catch (_) { return null; }\n"
+              "  }\n"
+              "}\n"
+          )
+          (root / "lib" / "record_linux.dart").write_text(dart_code, encoding="utf-8")
+          pub = Path("pubspec.yaml")
+          txt = pub.read_text(encoding="utf-8", errors="ignore")
+          txt = re.sub(
+              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
+              "\n",
+              txt,
+              count=1,
+          )
+          block = (
+              "\ndependency_overrides:\n"
+              "  web: ^1.0.0\n"
+              "  record_linux:\n"
+              "    path: third_party/record_linux_stub\n"
+          )
+          pub.write_text(txt.rstrip() + "\n" + block + "\n", encoding="utf-8")
+          print("record_linux stub OK")
+          PY
+          rm -f pubspec.lock
+          flutter pub get
+          echo "stub record_linux done"
 
       - name: Upgrade Gradle wrapper
         working-directory: ${{ steps.proj.outputs.dir }}
