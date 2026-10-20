@@ -309,13 +309,12 @@ jobs:
         run: |
           set -eu
           python3 - <<'FIX'
-          import os, re, pathlib
+          import os, re, pathlib, xml.etree.ElementTree as ET
           root = os.environ.get("ROOT", "project_src")
-          fixed = 0
+          fixed_n = 0
           for path in pathlib.Path(root).rglob("AndroidManifest.xml"):
               text = path.read_text(encoding="utf-8", errors="replace")
               orig = text
-              # BOOT_COMPLETED</action>\n<action  → close properly
               text = re.sub(
                   r'<action\s+android:name="([^"]*?)</action>\\n\s*<action\s+android:name="',
                   r'<action android:name="\1" />\n                <action android:name="',
@@ -327,14 +326,34 @@ jobs:
                   text,
               )
               text = text.replace("\\n", "\n")
+              a = 'android:value="lock_overlay" />'
+              idx = text.find(a)
+              if idx != -1:
+                  rest = text[idx + len(a):]
+                  m = re.search(r'^\s*<service\s+android:name="\.KeyboardOverlayService"', rest)
+                  if m:
+                      text = text[:idx + len(a)] + "\n        </service>\n\n        " + rest.lstrip()
+              text = re.sub(
+                  r'(android:value="system_overlay"\s*/>\s*</service>)\s*</service>',
+                  r'\1',
+                  text,
+              )
+              text = re.sub(
+                  r'(android:value="[^"]*"\s*/>)\s*\n(\s*)(<service\b)',
+                  r'\1\n        </service>\n\n\2\3',
+                  text,
+              )
+              text = re.sub(r'</service>\s*</service>', '</service>', text)
               if text != orig:
                   path.write_text(text, encoding="utf-8")
-                  fixed += 1
+                  fixed_n += 1
                   print("fixed", path)
-                  for i, line in enumerate(text.splitlines(), 1):
-                      if "BOOT_COMPLETED" in line or "LOCKED_BOOT" in line:
-                          print(f"  L{i}: {line.strip()}")
-          print("manifests_fixed=", fixed)
+                  try:
+                      ET.fromstring(text)
+                      print("  XML parse OK")
+                  except Exception as e:
+                      print("  XML parse FAIL", e)
+          print("manifests_fixed=", fixed_n)
           FIX
 
       - name: Build APK
