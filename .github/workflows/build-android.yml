@@ -305,6 +305,38 @@ jobs:
           fi
           ls -la gradle/wrapper/ || true
 
+      - name: Fix AndroidManifest XML
+        run: |
+          set -eu
+          python3 - <<'FIX'
+          import os, re, pathlib
+          root = os.environ.get("ROOT", "project_src")
+          fixed = 0
+          for path in pathlib.Path(root).rglob("AndroidManifest.xml"):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              orig = text
+              # BOOT_COMPLETED</action>\n<action  → close properly
+              text = re.sub(
+                  r'<action\s+android:name="([^"]*?)</action>\\n\s*<action\s+android:name="',
+                  r'<action android:name="\1" />\n                <action android:name="',
+                  text,
+              )
+              text = re.sub(
+                  r'(<action\s+android:name=")([^"<]*?)</action>',
+                  r'\1\2" />',
+                  text,
+              )
+              text = text.replace("\\n", "\n")
+              if text != orig:
+                  path.write_text(text, encoding="utf-8")
+                  fixed += 1
+                  print("fixed", path)
+                  for i, line in enumerate(text.splitlines(), 1):
+                      if "BOOT_COMPLETED" in line or "LOCKED_BOOT" in line:
+                          print(f"  L{i}: {line.strip()}")
+          print("manifests_fixed=", fixed)
+          FIX
+
       - name: Build APK
         env:
           BUILD_TYPE: ${{ steps.meta.outputs.build_type }}
