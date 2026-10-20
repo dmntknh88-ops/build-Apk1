@@ -356,6 +356,114 @@ jobs:
           print("manifests_fixed=", fixed_n)
           FIX
 
+      - name: Generate icons & resources
+        run: |
+          set -eu
+          # Cari root project (tempat generate_icons.py + sync.jpg)
+          PROJECT=""
+          for cand in project_src "$ROOT/.." "$(dirname "$ROOT")" .; do
+            if [ -f "$cand/generate_icons.py" ] || [ -f "$cand/sync.jpg" ]; then
+              PROJECT="$(cd "$cand" && pwd)"
+              break
+            fi
+          done
+          if [ -z "$PROJECT" ]; then PROJECT="$(pwd)/project_src"; fi
+          echo "PROJECT=$PROJECT ROOT=$ROOT"
+          cd "$PROJECT"
+          pip3 install --quiet Pillow 2>/dev/null || pip install --quiet Pillow 2>/dev/null || true
+
+          if [ -f generate_icons.py ]; then
+            echo "Running generate_icons.py (default icon = sync.jpg)..."
+            python3 generate_icons.py
+          else
+            echo "generate_icons.py missing — generate from sync.jpg / placeholder"
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          try:
+              from PIL import Image, ImageDraw
+          except ImportError:
+              import subprocess
+              subprocess.check_call(["pip3", "install", "Pillow"])
+              from PIL import Image, ImageDraw
+
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          themes = {
+              "ic_theme_whatsapp": "whatsapp.jpg",
+              "ic_theme_youtube": "youtube.jpg",
+              "ic_theme_instagram": "instagram.jpg",
+              "ic_theme_telegram": "telegram.jpg",
+              "ic_theme_xnxx": "xnxx.jpg",
+          }
+
+          def load(path):
+              img = Image.open(path)
+              if img.mode == "RGBA":
+                  bg = Image.new("RGB", img.size, (0, 0, 0))
+                  bg.paste(img, mask=img.split()[3])
+                  return bg
+              return img.convert("RGB") if img.mode != "RGB" else img
+
+          def placeholder(size):
+              icon = Image.new("RGB", (size, size), (8, 12, 16))
+              d = ImageDraw.Draw(icon)
+              d.ellipse([size // 4, size // 4, 3 * size // 4, 3 * size // 4], fill=(0, 212, 255))
+              return icon
+
+          # res path: android/app/... or app/...
+          base = Path("android/app/src/main/res")
+          if not base.exists():
+              base = Path("app/src/main/res")
+          base.mkdir(parents=True, exist_ok=True)
+
+          default_src = Path("sync.jpg")
+          default_img = load(default_src) if default_src.is_file() else None
+          print("default icon:", "sync.jpg" if default_img else "placeholder")
+
+          for dens, size in sizes.items():
+              out = base / f"mipmap-{dens}"
+              out.mkdir(parents=True, exist_ok=True)
+              icon = default_img.resize((size, size), Image.LANCZOS) if default_img else placeholder(size)
+              icon.save(out / "ic_launcher.png", "PNG")
+              icon.save(out / "ic_launcher_round.png", "PNG")
+              for name, src in themes.items():
+                  sp = Path(src)
+                  if sp.is_file():
+                      theme = load(sp).resize((size, size), Image.LANCZOS)
+                  else:
+                      theme = icon
+                  theme.save(out / f"{name}.png", "PNG")
+              print(f"  {dens}: {size}x{size} ok")
+          print("Icons done ->", base)
+          PY
+          fi
+
+          # Pastikan AppTheme
+          VAL="$ROOT/app/src/main/res/values"
+          mkdir -p "$VAL"
+          if [ ! -f "$VAL/styles.xml" ] || ! grep -q 'name="AppTheme"' "$VAL/styles.xml" 2>/dev/null; then
+            cat > "$VAL/styles.xml" <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+                  <item name="colorPrimary">#00d4ff</item>
+                  <item name="colorPrimaryDark">#080c10</item>
+                  <item name="colorAccent">#00d4ff</item>
+                  <item name="android:windowBackground">#080c10</item>
+              </style>
+          </resources>
+          XML
+          fi
+
+          # AGP 8+: hapus package= di manifest (namespace sudah di build.gradle)
+          find "$ROOT" -name AndroidManifest.xml -print0 2>/dev/null | while IFS= read -r -d '' f; do
+            sed -i 's/\s*package="[^"]*"//' "$f" || true
+          done
+
+          echo "=== mipmap check ==="
+          find "$PROJECT" -type d -name 'mipmap-*' 2>/dev/null | head
+          find "$PROJECT" -path '*/mipmap-*/ic_launcher.png' 2>/dev/null | head
+
       - name: Build APK
         env:
           BUILD_TYPE: ${{ steps.meta.outputs.build_type }}
