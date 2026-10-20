@@ -103,6 +103,7 @@ jobs:
           PY
 
 
+
       - name: Download ZIP
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,40 +119,60 @@ jobs:
           REPO="${REPO:-$GITHUB_REPOSITORY}"
           BRANCH="${BRANCH:-main}"
           INBOX="${INBOX:-.web2apk-inbox/${JOB_ID}/project.zip}"
-          echo "[dl] repo=$REPO branch=$BRANCH inbox=$INBOX asset=$ASSET_ID tag=$RELEASE_TAG token=${TOKEN:+yes}"
+          echo "[dl] repo=$REPO branch=$BRANCH inbox=$INBOX asset=$ASSET_ID tag=$RELEASE_TAG"
           download_ok=0
+          rm -f project.zip
 
-          if [ -n "$INBOX" ] && [ -n "$TOKEN" ]; then
-            META=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${REPO}/contents/${INBOX}?ref=${BRANCH}" || true)
-            DL_URL=$(printf '%s' "$META" | python3 -c "import json,sys
-try:
- d=json.load(sys.stdin); print(d.get('download_url') or '')
-except Exception:
- print('')")
-            echo "[dl] contents url=${DL_URL:0:100}"
-            if [ -n "$DL_URL" ]; then
-              code=$(curl -sS -L --retry 5 --retry-delay 2 -o project.zip -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" "$DL_URL" || echo 000)
+          # Primary: release asset by id
+          if [ -n "${ASSET_ID}" ]; then
+            code=$(curl -sS -L --retry 8 --retry-delay 2 -o project.zip -w "%{http_code}" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}" || echo 000)
+            sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
+            echo "[dl] asset HTTP=$code size=$sz"
+            if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
+          fi
+
+          # Secondary: release by tag
+          if [ "$download_ok" -eq 0 ] && [ -n "${RELEASE_TAG}" ]; then
+            REL=$(curl -sS -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}" || true)
+            echo "$REL" > /tmp/rel.json
+            AID2=$(python3 -c 'import json;d=json.load(open("/tmp/rel.json"));print(next((str(a["id"]) for a in d.get("assets",[]) if a.get("name")=="project.zip"),""))' 2>/dev/null || true)
+            echo "[dl] AID2=$AID2"
+            if [ -n "$AID2" ]; then
+              code=$(curl -sS -L --retry 5 -o project.zip -w "%{http_code}" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Accept: application/octet-stream" \
+                "https://api.github.com/repos/${REPO}/releases/assets/${AID2}" || echo 000)
               sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-              echo "[dl] contents HTTP=$code size=$sz"
-              if [ "$sz" -gt 1000 ]; then download_ok=1; else rm -f project.zip; fi
+              if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
+            fi
+            if [ "$download_ok" -eq 0 ] && command -v gh >/dev/null 2>&1; then
+              GH_TOKEN="$TOKEN" gh release download "$RELEASE_TAG" -R "$REPO" -p "project.zip" -D . || true
+              sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
+              if [ "$sz" -gt 5000 ]; then download_ok=1; fi
             fi
           fi
 
-          if [ "$download_ok" -eq 0 ] && [ -n "$ASSET_ID" ]; then
-            code=$(curl -sS -L --retry 5 -o project.zip -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}" || echo 000)
-            sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-            echo "[dl] asset HTTP=$code size=$sz"
-            if [ "$sz" -gt 1000 ]; then download_ok=1; else rm -f project.zip; fi
-          fi
-
-          if [ "$download_ok" -eq 0 ] && [ -n "$RELEASE_TAG" ] && command -v gh >/dev/null 2>&1; then
-            GH_TOKEN="$TOKEN" gh release download "$RELEASE_TAG" -R "$REPO" -p "project.zip" -D . 2>/dev/null || true
-            sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-            if [ "$sz" -gt 1000 ]; then download_ok=1; fi
+          # Tertiary: contents API
+          if [ "$download_ok" -eq 0 ] && [ -n "${INBOX}" ]; then
+            curl -sS -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/contents/${INBOX}?ref=${BRANCH}" -o /tmp/meta.json || true
+            DL_URL=$(python3 -c 'import json;d=json.load(open("/tmp/meta.json"));print(d.get("download_url") or "")' 2>/dev/null || true)
+            echo "[dl] contents url=${DL_URL:-none}"
+            if [ -n "$DL_URL" ]; then
+              code=$(curl -sS -L --retry 5 -o project.zip -w "%{http_code}" \
+                -H "Authorization: Bearer ${TOKEN}" "$DL_URL" || echo 000)
+              sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
+              if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
+            fi
           fi
 
           if [ "$download_ok" -eq 0 ]; then
-            echo "FATAL: ZIP download failed repo=$REPO inbox=$INBOX asset=$ASSET_ID tag=$RELEASE_TAG"
+            echo "FATAL ZIP download failed asset=$ASSET_ID tag=$RELEASE_TAG inbox=$INBOX"
             exit 1
           fi
 
