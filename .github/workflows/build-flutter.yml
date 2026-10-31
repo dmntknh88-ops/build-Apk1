@@ -177,9 +177,45 @@ jobs:
           fi
 
           echo "ZIP OK size=$(stat -c%s project.zip)"
+          # Validasi magic ZIP
+          if ! head -c 4 project.zip | grep -q 'PK'; then
+            echo "FATAL: bukan file ZIP valid (header rusak)"
+            head -c 200 project.zip | xxd || true
+            exit 1
+          fi
           rm -rf project_src
           mkdir -p project_src
-          unzip -q project.zip -d project_src
+          # Ekstrak toleran: lewati member korup (mis. video.mp4)
+          python3 << 'UNZIPPY'
+          import zipfile, os, sys
+          dest = "project_src"
+          ok = 0
+          skip = 0
+          try:
+              z = zipfile.ZipFile("project.zip", "r")
+          except Exception as e:
+              print("FATAL open zip:", e)
+              sys.exit(1)
+          for info in z.infolist():
+              name = info.filename
+              if not name or name.endswith("/"):
+                  try:
+                      os.makedirs(os.path.join(dest, name), exist_ok=True)
+                  except Exception:
+                      pass
+                  continue
+              try:
+                  z.extract(info, dest)
+                  ok += 1
+              except Exception as e:
+                  skip += 1
+                  print("skip corrupt:", name, "->", e)
+          z.close()
+          print(f"extracted={ok} skipped={skip}")
+          if ok < 3:
+              print("FATAL: terlalu sedikit file terekstrak")
+              sys.exit(1)
+          UNZIPPY
           ND=$(find project_src -mindepth 1 -maxdepth 1 -type d | wc -l)
           NF=$(find project_src -mindepth 1 -maxdepth 1 -type f | wc -l)
           if [ "$ND" -eq 1 ] && [ "$NF" -eq 0 ]; then
@@ -343,14 +379,8 @@ jobs:
               for m in re.finditer(r"""package:([a-zA-Z0-9_]+)/""", src):
                   imported.add(m.group(1))
 
-          missing = sorted(p for p in imported if p not in declared and p != pkg_name)
-          print("imported:", sorted(imported)[:40], "...")
-          print("missing:", missing)
-          if not missing:
-              print("no missing deps")
-              raise SystemExit(0)
-
-          # Known safe version pins for common packages (avoid latest breaking)
+          # JANGAN pernah menambah paket yang tidak dikenal ke pub.dev (contoh: xxo25 = nama lokal project)
+          # Known safe version pins — HANYA ini yang boleh di-auto-add
           PINS = {
               "file_picker": "^8.1.2",
               "permission_handler": "^11.0.0",
@@ -409,7 +439,37 @@ jobs:
               "network_info_plus": "^4.1.0",
               "flutter_webrtc": "^0.12.0",
               "win32": "^5.0.0",
+              "better_player_enhanced": "^0.0.1",
+              "flutter_animate": "^4.5.0",
+              "google_fonts": "^6.1.0",
+              "cached_network_image": "^3.3.0",
+              "email_validator": "^2.1.17",
+              "mime": "^1.0.5",
+              "shimmer": "^3.0.0",
+              "chewie": "^1.7.0",
+              "carousel_slider": "^5.0.0",
           }
+
+          # Hanya auto-add yang ada di PINS + bukan nama project + bukan declared
+          # Skip local/unknown package names (xxo25, Zet_X, otax, dll) — VPS build OK tanpa ini
+          skip_names = {pkg_name, pkg_name.lower(), "xxo25", "otax", "zet_x", "zetx"}
+          missing = sorted(
+              p for p in imported
+              if p not in declared
+              and p not in skip_names
+              and p.lower() not in skip_names
+              and p in PINS
+          )
+          skipped = sorted(
+              p for p in imported
+              if p not in declared and p != pkg_name and p not in PINS
+          )
+          print("imported:", sorted(imported)[:50], "...")
+          print("missing(auto):", missing)
+          print("skipped(local/unknown):", skipped)
+          if not missing:
+              print("no missing deps to add (unknown packages skipped)")
+              raise SystemExit(0)
 
           # Insert under dependencies: block
           lines = text.splitlines(True)
@@ -426,7 +486,9 @@ jobs:
                   # left dependencies block — insert before this line
                   if not inserted:
                       for pkg in missing:
-                          ver = PINS.get(pkg, "any")
+                          ver = PINS.get(pkg)
+                          if not ver:
+                              continue
                           out.insert(-1, f"{deps_indent}{pkg}: {ver}\n")
                           print(f"add {pkg}: {ver}")
                       inserted = True
@@ -435,16 +497,19 @@ jobs:
                   pass
           if in_deps and not inserted:
               for pkg in missing:
-                  ver = PINS.get(pkg, "any")
+                  ver = PINS.get(pkg)
+                  if not ver:
+                      continue
                   out.append(f"{deps_indent}{pkg}: {ver}\n")
                   print(f"add {pkg}: {ver}")
               inserted = True
 
           if not inserted:
-              # fallback: append dependencies section
               out.append("\ndependencies:\n")
               for pkg in missing:
-                  ver = PINS.get(pkg, "any")
+                  ver = PINS.get(pkg)
+                  if not ver:
+                      continue
                   out.append(f"  {pkg}: {ver}\n")
                   print(f"add(fallback) {pkg}: {ver}")
 
@@ -453,6 +518,236 @@ jobs:
           PY
           rm -f pubspec.lock
           echo "deps scanned (pub get di step berikutnya)"
+
+      - name: Sanitize pubspec (fix invalid children under flutter:)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          if [ ! -f pubspec.yaml ]; then echo "no pubspec"; exit 0; fi
+          python3 <<'SANPY'
+from pathlib import Path
+import re
+
+pub = Path("pubspec.yaml")
+text = pub.read_text(encoding="utf-8", errors="ignore")
+lines = text.splitlines(True)
+
+# Keys allowed under TOP-LEVEL flutter:
+FLUTTER_TOP = {
+    "uses-material-design", "assets", "fonts", "generate", "plugin",
+    "module", "config", "shaders", "default-flavor", "disable-swift-package-manager",
+}
+# Keys allowed under dependencies → flutter:
+FLUTTER_DEP = {"sdk", "git", "path", "version", "hosted", "ref"}
+
+out = []
+i = 0
+n = len(lines)
+moved = []  # packages to put under dependencies
+
+def is_top(ln):
+    return bool(re.match(r"^[a-zA-Z_]", ln))
+
+while i < n:
+    line = lines[i]
+
+    # --- top-level flutter: ---
+    if re.match(r"^flutter\s*:\s*$", line):
+        out.append(line)
+        i += 1
+        while i < n and not is_top(lines[i]):
+            ln = lines[i]
+            m = re.match(r"^(\s{2})([a-zA-Z0-9_.-]+)\s*:(.*)$", ln)
+            if m:
+                key = m.group(2)
+                rest = m.group(3)
+                # collect full block
+                block = [ln]
+                i += 1
+                while i < n and not is_top(lines[i]):
+                    nln = lines[i]
+                    if re.match(r"^\s{2}[a-zA-Z0-9_.-]+\s*:", nln) and not re.match(r"^\s{4,}", nln):
+                        break
+                    block.append(nln)
+                    i += 1
+                if key in FLUTTER_TOP:
+                    out.extend(block)
+                else:
+                    moved.append(key)
+                    print("MOVE top flutter: -> deps:", key)
+                continue
+            out.append(ln)
+            i += 1
+        continue
+
+    # --- dependencies / dev_dependencies: flutter: with illegal children ---
+    if re.match(r"^  flutter\s*:\s*$", line):
+        out.append(line)
+        i += 1
+        while i < n:
+            nln = lines[i]
+            # next dependency at indent 2 or top-level
+            if is_top(nln) or re.match(r"^  [a-zA-Z0-9_.-]+\s*:", nln):
+                break
+            m = re.match(r"^    ([a-zA-Z0-9_.-]+)\s*:(.*)$", nln)
+            if m:
+                key = m.group(1)
+                if key in FLUTTER_DEP:
+                    out.append(nln)
+                    i += 1
+                    # keep nested under sdk/git/path
+                    while i < n and re.match(r"^      ", lines[i]):
+                        out.append(lines[i])
+                        i += 1
+                    continue
+                # illegal child under dependencies.flutter
+                moved.append(key)
+                print("UN-NEST deps.flutter child:", key)
+                i += 1
+                while i < n and re.match(r"^      ", lines[i]):
+                    i += 1
+                continue
+            out.append(nln)
+            i += 1
+        continue
+
+    out.append(line)
+    i += 1
+
+text2 = "".join(out)
+
+# Insert moved packages under dependencies:
+if moved:
+    # dedupe keep order
+    seen = set()
+    pkgs = []
+    for k in moved:
+        if k not in seen and k not in ("flutter", "flutter_test"):
+            seen.add(k)
+            pkgs.append(k)
+    lines2 = text2.splitlines(True)
+    final = []
+    inserted = False
+    in_deps = False
+    for ln in lines2:
+        if re.match(r"^dependencies\s*:\s*$", ln):
+            final.append(ln)
+            in_deps = True
+            continue
+        if in_deps and (is_top(ln) if True else False) and re.match(r"^[a-zA-Z_]", ln):
+            if not inserted:
+                for k in pkgs:
+                    final.append(f"  {k}: any\n")
+                    print("INSERT deps:", k)
+                inserted = True
+            in_deps = False
+        final.append(ln)
+    if in_deps and not inserted:
+        for k in pkgs:
+            final.append(f"  {k}: any\n")
+        inserted = True
+    if not inserted and pkgs:
+        final.append("\ndependencies:\n")
+        final.append("  flutter:\n")
+        final.append("    sdk: flutter\n")
+        for k in pkgs:
+            final.append(f"  {k}: any\n")
+    text2 = "".join(final)
+
+# Final pass: strip any remaining "    package:" directly under "  flutter:" with sdk
+lines3 = text2.splitlines(True)
+final3 = []
+i = 0
+n = len(lines3)
+while i < n:
+    ln = lines3[i]
+    final3.append(ln)
+    if re.match(r"^  flutter\s*:\s*$", ln):
+        i += 1
+        while i < n:
+            nln = lines3[i]
+            if re.match(r"^[a-zA-Z_]", nln) or re.match(r"^  [a-zA-Z0-9_.-]+\s*:", nln):
+                break
+            m = re.match(r"^    ([a-zA-Z0-9_.-]+)\s*:", nln)
+            if m and m.group(1) not in FLUTTER_DEP:
+                print("STRIP remaining under flutter:", m.group(1))
+                i += 1
+                while i < n and re.match(r"^      ", lines3[i]):
+                    i += 1
+                continue
+            final3.append(nln)
+            i += 1
+        continue
+    i += 1
+
+pub.write_text("".join(final3), encoding="utf-8")
+print("pubspec sanitized OK")
+# verify
+txt = pub.read_text(encoding="utf-8", errors="ignore")
+if re.search(r"^  flutter:\s*\n(?:    sdk:.*\n)?    record_", txt, re.M):
+    print("WARN still has nested under flutter")
+SANPY
+          echo "--- pubspec flutter sections ---"
+          grep -n -A8 "^flutter:\|^dependencies:\|^  flutter:" pubspec.yaml | head -80 || true
+
+      - name: Strip invalid / local package deps (anti xxo25)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          pub = Path("pubspec.yaml")
+          if not pub.exists():
+              print("no pubspec")
+              raise SystemExit(0)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
+          pkg_name = name_m.group(1) if name_m else "app"
+          BAD = {
+              pkg_name, pkg_name.lower(),
+              "xxo25", "otax", "zet_x", "zetx", "Zet_X", "web2apk",
+          }
+          lines = text.splitlines(True)
+          out = []
+          in_deps = False
+          removed = []
+          for line in lines:
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides|flutter|environment|name|description|publish_to|version|fonts|assets):", line):
+                  in_deps = line.startswith("dependencies:") or line.startswith("dev_dependencies:") or line.startswith("dependency_overrides:")
+                  out.append(line)
+                  continue
+              if in_deps:
+                  m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
+                  if m:
+                      dep = m.group(1)
+                      if dep in BAD or dep.lower() in {b.lower() for b in BAD}:
+                          removed.append(dep)
+                          continue
+              out.append(line)
+          pub.write_text("".join(out), encoding="utf-8")
+          print("stripped deps:", removed)
+
+          for dart in Path(".").rglob("*.dart"):
+              if any(x in str(dart) for x in [".dart_tool", "build/", ".pub-cache"]):
+                  continue
+              try:
+                  src = dart.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              new = src
+              for bad in BAD:
+                  if bad == pkg_name:
+                      continue
+                  new = new.replace(f"package:{bad}/", f"package:{pkg_name}/")
+              if new != src:
+                  dart.write_text(new, encoding="utf-8")
+                  print("rewrote imports in", dart)
+          print("pkg_name=", pkg_name)
+          PY
+          rm -f pubspec.lock
+          echo "--- deps after strip ---"
+          grep -E "^  [a-zA-Z0-9_]+:" pubspec.yaml | head -40 || true
 
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
