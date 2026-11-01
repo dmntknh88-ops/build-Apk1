@@ -284,13 +284,15 @@ jobs:
 
           text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
           
-          # Pin packages that break on older/newer SDK
-          def pin(name, ver):
-              nonlocal text
-              if re.search(rf"^\s*{re.escape(name)}\s*:", text, re.M):
-                  text = re.sub(rf"^(\s*{re.escape(name)}\s*:)\s*.*$", rf"\g<1> {ver}", text, flags=re.M)
-                  print(f"pin {name} -> {ver}")
-          pin("better_player_enhanced", "1.0.1")
+          for _pname, _pver in [("better_player_enhanced", "1.0.1")]:
+              if re.search(r"^\s*%s\s*:" % re.escape(_pname), text, re.M):
+                  text = re.sub(
+                      r"^(\s*%s\s*):\s*.*$" % re.escape(_pname),
+                      r"\g<1> %s" % _pver,
+                      text,
+                      flags=re.M,
+                  )
+                  print("pin %s -> %s" % (_pname, _pver))
 
           text = text.rstrip() + "\n\ndependency_overrides:\n  collection: 1.19.1\n  web: ^1.0.0\n  meta: 1.16.0\n  vector_math: 2.1.4\n  characters: 1.4.0\n  wakelock_plus: 1.2.8\n"
           p.write_text(text, encoding="utf-8")
