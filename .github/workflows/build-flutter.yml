@@ -283,7 +283,7 @@ jobs:
           text = "".join(out)
 
           text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
-          text = text.rstrip() + "\n\ndependency_overrides:\n  collection: 1.19.1\n  web: ^1.0.0\n"
+          text = text.rstrip() + "\n\ndependency_overrides:\n  collection: 1.19.1\n  web: ^1.0.0\n  meta: 1.16.0\n  vector_math: 2.1.4\n  characters: 1.4.0\n"
           p.write_text(text, encoding="utf-8")
           print("removed_from_pubspec=", removed)
 
