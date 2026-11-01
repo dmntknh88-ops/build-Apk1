@@ -281,21 +281,23 @@ jobs:
               out.append(line)
           text = "".join(out)
 
-          # dependency_overrides: record_linux (hindari error hasPermission di Linux stub)
-          if "dependency_overrides:" not in text:
-              text = text.rstrip() + "\n\ndependency_overrides:\n  record_linux: ^1.0.0\n"
-          elif "record_linux:" not in text:
-              text = re.sub(
-                  r"(dependency_overrides:\s*\n)",
-                  r"\1  record_linux: ^1.0.0\n",
-                  text,
-                  count=1,
-              )
+          # Paksa dependency_overrides record_* (record_linux 0.7.2 bentrok hasPermission)
+          text = re.sub(
+              r"\ndependency_overrides:[\s\S]*?(?=\n[a-zA-Z_]|\Z)",
+              "\n",
+              text,
+              count=1,
+          )
+          text = text.rstrip() + """
 
+dependency_overrides:
+  record_linux: ^1.1.1
+  record_platform_interface: ^1.3.0
+"""
           pub.write_text(text, encoding="utf-8")
           print("removed deps:", removed)
           print("illegal flutter children:", illegal)
-          print("record_linux override OK")
+          print("record_linux override FORCED ^1.1.1")
           PY
           rm -f pubspec.lock
 
@@ -304,7 +306,34 @@ jobs:
         run: |
           set -e
           flutter --version
+          echo "=== pubspec overrides ==="
+          grep -A20 "^dependency_overrides:" pubspec.yaml || true
           flutter pub get
+          echo "=== record packages resolved ==="
+          flutter pub deps 2>/dev/null | grep -i record || true
+          # Jika masih record_linux 0.7.x, paksa lagi
+          if flutter pub deps 2>/dev/null | grep -q "record_linux 0\.7"; then
+            echo "WARN still record_linux 0.7 — force override + pub get"
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("pubspec.yaml")
+          t = p.read_text(encoding="utf-8", errors="ignore")
+          t = re.sub(r"\ndependency_overrides:[\s\S]*?(?=\n[a-zA-Z_]|\Z)", "\n", t, count=1)
+          t = t.rstrip() + """
+
+dependency_overrides:
+  record_linux: 1.1.1
+  record_platform_interface: 1.3.0
+  record: 5.2.1
+"""
+          p.write_text(t, encoding="utf-8")
+          print("forced pins written")
+          PY
+            rm -f pubspec.lock
+            flutter pub get
+            flutter pub deps 2>/dev/null | grep -i record || true
+          fi
           echo "pub get OK"
 
       - name: Prepare Android (local.properties + NDK + minSdk)
