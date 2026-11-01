@@ -22,7 +22,7 @@ on:
 
 env:
   JAVA_VERSION: "17"
-  FLUTTER_VERSION: "3.32.8"
+  FLUTTER_VERSION: "3.38.1"
   ANDROID_API_LEVEL: "34"
   ANDROID_BUILD_TOOLS: "34.0.0"
 
@@ -201,7 +201,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.32.8"
+          flutter-version: "3.38.1"
           channel: stable
           cache: true
 
@@ -283,7 +283,16 @@ jobs:
           text = "".join(out)
 
           text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
-          text = text.rstrip() + "\n\ndependency_overrides:\n  collection: 1.19.1\n  web: ^1.0.0\n  meta: 1.16.0\n  vector_math: 2.1.4\n  characters: 1.4.0\n"
+          
+          # Pin packages that break on older/newer SDK
+          def pin(name, ver):
+              nonlocal text
+              if re.search(rf"^\s*{re.escape(name)}\s*:", text, re.M):
+                  text = re.sub(rf"^(\s*{re.escape(name)}\s*:)\s*.*$", rf"\g<1> {ver}", text, flags=re.M)
+                  print(f"pin {name} -> {ver}")
+          pin("better_player_enhanced", "1.0.1")
+
+          text = text.rstrip() + "\n\ndependency_overrides:\n  collection: 1.19.1\n  web: ^1.0.0\n  meta: 1.16.0\n  vector_math: 2.1.4\n  characters: 1.4.0\n  wakelock_plus: 1.2.8\n"
           p.write_text(text, encoding="utf-8")
           print("removed_from_pubspec=", removed)
 
