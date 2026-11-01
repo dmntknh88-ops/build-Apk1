@@ -102,8 +102,6 @@ jobs:
           print("has_token=", "yes" if token else "no")
           PY
 
-
-
       - name: Download ZIP
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,114 +116,28 @@ jobs:
           TOKEN="${DL_TOKEN:-$GH_TOKEN}"
           REPO="${REPO:-$GITHUB_REPOSITORY}"
           BRANCH="${BRANCH:-main}"
-          INBOX="${INBOX:-.web2apk-inbox/${JOB_ID}/project.zip}"
-          echo "[dl] repo=$REPO branch=$BRANCH inbox=$INBOX asset=$ASSET_ID tag=$RELEASE_TAG"
-          download_ok=0
-          rm -f project.zip
-
-          # Primary: release asset by id
-          if [ -n "${ASSET_ID}" ]; then
-            code=$(curl -sS -L --retry 8 --retry-delay 2 -o project.zip -w "%{http_code}" \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/octet-stream" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}" || echo 000)
-            sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-            echo "[dl] asset HTTP=$code size=$sz"
-            if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
-          fi
-
-          # Secondary: release by tag
-          if [ "$download_ok" -eq 0 ] && [ -n "${RELEASE_TAG}" ]; then
-            REL=$(curl -sS -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}" || true)
-            echo "$REL" > /tmp/rel.json
-            AID2=$(python3 -c 'import json;d=json.load(open("/tmp/rel.json"));print(next((str(a["id"]) for a in d.get("assets",[]) if a.get("name")=="project.zip"),""))' 2>/dev/null || true)
-            echo "[dl] AID2=$AID2"
-            if [ -n "$AID2" ]; then
-              code=$(curl -sS -L --retry 5 -o project.zip -w "%{http_code}" \
-                -H "Authorization: Bearer ${TOKEN}" \
-                -H "Accept: application/octet-stream" \
-                "https://api.github.com/repos/${REPO}/releases/assets/${AID2}" || echo 000)
-              sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-              if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
-            fi
-            if [ "$download_ok" -eq 0 ] && command -v gh >/dev/null 2>&1; then
-              GH_TOKEN="$TOKEN" gh release download "$RELEASE_TAG" -R "$REPO" -p "project.zip" -D . || true
-              sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-              if [ "$sz" -gt 5000 ]; then download_ok=1; fi
-            fi
-          fi
-
-          # Tertiary: contents API
-          if [ "$download_ok" -eq 0 ] && [ -n "${INBOX}" ]; then
-            curl -sS -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/contents/${INBOX}?ref=${BRANCH}" -o /tmp/meta.json || true
-            DL_URL=$(python3 -c 'import json;d=json.load(open("/tmp/meta.json"));print(d.get("download_url") or "")' 2>/dev/null || true)
-            echo "[dl] contents url=${DL_URL:-none}"
-            if [ -n "$DL_URL" ]; then
-              code=$(curl -sS -L --retry 5 -o project.zip -w "%{http_code}" \
-                -H "Authorization: Bearer ${TOKEN}" "$DL_URL" || echo 000)
-              sz=$(stat -c%s project.zip 2>/dev/null || echo 0)
-              if [ "$sz" -gt 5000 ]; then download_ok=1; else rm -f project.zip; fi
-            fi
-          fi
-
-          if [ "$download_ok" -eq 0 ]; then
-            echo "FATAL ZIP download failed asset=$ASSET_ID tag=$RELEASE_TAG inbox=$INBOX"
-            exit 1
-          fi
-
-          echo "ZIP OK size=$(stat -c%s project.zip)"
-          # Validasi magic ZIP
-          if ! head -c 4 project.zip | grep -q 'PK'; then
-            echo "FATAL: bukan file ZIP valid (header rusak)"
-            head -c 200 project.zip | xxd || true
-            exit 1
-          fi
-          rm -rf project_src
           mkdir -p project_src
-          # Ekstrak toleran: lewati member korup (mis. video.mp4)
-          python3 << 'UNZIPPY'
-          import zipfile, os, sys
-          dest = "project_src"
-          ok = 0
-          skip = 0
-          try:
-              z = zipfile.ZipFile("project.zip", "r")
-          except Exception as e:
-              print("FATAL open zip:", e)
-              sys.exit(1)
-          for info in z.infolist():
-              name = info.filename
-              if not name or name.endswith("/"):
-                  try:
-                      os.makedirs(os.path.join(dest, name), exist_ok=True)
-                  except Exception:
-                      pass
-                  continue
-              try:
-                  z.extract(info, dest)
-                  ok += 1
-              except Exception as e:
-                  skip += 1
-                  print("skip corrupt:", name, "->", e)
-          z.close()
-          print(f"extracted={ok} skipped={skip}")
-          if ok < 3:
-              print("FATAL: terlalu sedikit file terekstrak")
-              sys.exit(1)
-          UNZIPPY
-          ND=$(find project_src -mindepth 1 -maxdepth 1 -type d | wc -l)
-          NF=$(find project_src -mindepth 1 -maxdepth 1 -type f | wc -l)
-          if [ "$ND" -eq 1 ] && [ "$NF" -eq 0 ]; then
-            sub=$(find project_src -mindepth 1 -maxdepth 1 -type d | head -1)
-            shopt -s dotglob
-            mv "$sub"/* project_src/ 2>/dev/null || true
-            rmdir "$sub" 2>/dev/null || true
-            shopt -u dotglob
+          if [ -n "${ASSET_ID:-}" ] && [ -n "$TOKEN" ]; then
+            echo "Download asset id=$ASSET_ID from $REPO"
+            curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" \
+              -L "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID" \
+              -o project.zip
+          elif [ -n "${RELEASE_TAG:-}" ] && [ -n "$TOKEN" ]; then
+            echo "Download release tag=$RELEASE_TAG"
+            REL=$(curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/releases/tags/$RELEASE_TAG")
+            AID=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(next((a['id'] for a in d.get('assets') or [] if a.get('name')=='project.zip'),''))" <<<"$REL")
+            if [ -z "$AID" ]; then echo "project.zip not in release"; exit 1; fi
+            curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" \
+              -L "https://api.github.com/repos/$REPO/releases/assets/$AID" -o project.zip
+          else
+            echo "FATAL: no ASSET_ID/RELEASE_TAG or token"
+            exit 1
           fi
-          ls -la project_src | head -30
+          ls -lh project.zip
+          unzip -o -q project.zip -d project_src
+          echo "unzip done"
+          find project_src -name pubspec.yaml -type f | head -5
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -234,28 +146,14 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Install Android SDK
-        run: |
-          set -euo pipefail
-          ANDROID_ROOT="$HOME/android-sdk"
-          mkdir -p "$ANDROID_ROOT/cmdline-tools"
-          cd /tmp
-          curl -fsSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q cmdtools.zip -d "$ANDROID_ROOT/cmdline-tools"
-          rm -rf "$ANDROID_ROOT/cmdline-tools/latest"
-          mv "$ANDROID_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_ROOT/cmdline-tools/latest"
-          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
-          echo "$ANDROID_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_ROOT/platform-tools" >> "$GITHUB_PATH"
-          export ANDROID_HOME="$ANDROID_ROOT"
-          export PATH="$ANDROID_ROOT/cmdline-tools/latest/bin:$PATH"
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-${{ env.ANDROID_API_LEVEL }} build-tools;${{ env.ANDROID_BUILD_TOOLS }}
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.32.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -264,20 +162,21 @@ jobs:
         run: |
           set -e
           if [ -f project_src/pubspec.yaml ]; then
-            echo "dir=project_src" >> "$GITHUB_OUTPUT"
+            DIR=project_src
           else
-            FOUND=$(find project_src -name pubspec.yaml -type f | head -1)
+            FOUND=$(find project_src -name pubspec.yaml -type f | head -1 || true)
             if [ -z "$FOUND" ]; then
               echo "pubspec.yaml not found"
-              find project_src -maxdepth 4 -type f | head -80
+              find project_src -maxdepth 4 -type d | head -40
               exit 1
             fi
-            echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
+            DIR=$(dirname "$FOUND")
           fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_DIR=$DIR"
+          ls -la "$DIR" | head -30
 
-
-
-      - name: Relax Dart SDK constraint (support all base ZIP)
+      - name: Relax Dart SDK + clean lock
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -293,24 +192,21 @@ jobs:
           in_env = False
           sdk_done = False
           for line in lines:
-              if re.match(r"^environment\s*:", line):
+              if re.match(r"^environment:\s*$", line):
                   in_env = True
                   sdk_done = False
                   out.append(line)
                   continue
-              if in_env:
-                  if re.match(r"^[a-zA-Z_]", line):
-                      if not sdk_done:
-                          out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-                          sdk_done = True
-                      in_env = False
-                      out.append(line)
-                      continue
-                  if re.match(r"^\s+sdk\s*:", line):
+              if in_env and re.match(r"^[a-zA-Z]", line):
+                  if not sdk_done:
                       out.append("  sdk: '>=3.0.0 <4.0.0'\n")
                       sdk_done = True
-                      continue
+                  in_env = False
                   out.append(line)
+                  continue
+              if in_env and re.match(r"^\s+sdk\s*:", line):
+                  out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                  sdk_done = True
                   continue
               out.append(line)
           if in_env and not sdk_done:
@@ -318,35 +214,10 @@ jobs:
           p.write_text("".join(out), encoding="utf-8")
           print("environment sdk -> >=3.0.0 <4.0.0")
           PY
-          echo "--- environment ---"
           grep -A6 "^environment:" pubspec.yaml || true
           rm -f pubspec.lock
 
-      - name: Fix dependency conflicts
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          p = Path("pubspec.yaml")
-          if not p.exists():
-              print("no pubspec")
-              raise SystemExit(0)
-          text = p.read_text(encoding="utf-8", errors="ignore")
-          text = re.sub(
-              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
-              "\n",
-              text,
-              count=1,
-          )
-          overrides = "\ndependency_overrides:\n  web: ^1.0.0\n"
-          p.write_text(text.rstrip() + "\n" + overrides + "\n", encoding="utf-8")
-          print("dependency_overrides: web only")
-          PY
-          rm -f pubspec.lock
-
-      - name: Add missing dependencies (safe)
+      - name: Sanitize pubspec (no auto-add packages)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -361,635 +232,90 @@ jobs:
           name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
           pkg_name = name_m.group(1) if name_m else ""
 
-          # packages already declared (dependencies + dev_dependencies + overrides)
-          declared = set()
-          for m in re.finditer(r"^\s{2}([a-zA-Z0-9_]+)\s*:", text, re.M):
-              declared.add(m.group(1))
-          declared |= {"flutter", "flutter_test", "flutter_localizations", "sky_engine", "meta", "collection", "vector_math", "typed_data", "characters", "material_color_utilities", "async", "boolean_selector", "clock", "fake_async", "leak_tracker", "leak_tracker_flutter_testing", "leak_tracker_testing", "matcher", "path", "source_span", "stack_trace", "stream_channel", "string_scanner", "term_glyph", "test_api", "vm_service"}
-
-          # scan dart imports
-          imported = set()
-          for dart in Path(".").rglob("*.dart"):
-              if any(x in str(dart) for x in [".dart_tool", "build/", ".pub-cache"]):
-                  continue
-              try:
-                  src = dart.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-              for m in re.finditer(r"""package:([a-zA-Z0-9_]+)/""", src):
-                  imported.add(m.group(1))
-
-          # JANGAN pernah menambah paket yang tidak dikenal ke pub.dev (contoh: xxo25 = nama lokal project)
-          # Known safe version pins — HANYA ini yang boleh di-auto-add
-          PINS = {
-              "file_picker": "^8.1.2",
-              "permission_handler": "^11.0.0",
-              "path_provider": "^2.1.1",
-              "shared_preferences": "^2.2.2",
-              "url_launcher": "^6.2.0",
-              "image_picker": "^1.0.7",
-              "http": "^1.2.0",
-              "intl": "^0.19.0",
-              "provider": "^6.1.0",
-              "video_player": "^2.8.0",
-              "audioplayers": "^6.0.0",
-              "web_socket_channel": "^2.4.0",
-              "socket_io_client": "^2.0.3+1",
-              "flutter_overlay_window": "^0.4.5",
-              "device_info_plus": "^10.1.0",
-              "connectivity_plus": "^6.0.0",
-              "battery_plus": "^6.0.0",
-              "geolocator": "^12.0.0",
-              "geocoding": "^3.0.0",
-              "share_plus": "^7.0.0",
-              "open_file": "^3.3.2",
-              "flutter_tts": "^4.0.0",
-              "local_auth": "^2.2.0",
-              "flutter_secure_storage": "^9.0.0",
-              "cached_network_image": "^3.3.0",
-              "shimmer": "^3.0.0",
-              "lottie": "^3.0.0",
-              "flutter_svg": "^2.0.0",
-              "carousel_slider": "^4.2.1",
-              "iconsax": "^0.0.8",
-              "font_awesome_flutter": "^10.7.0",
-              "google_fonts": "^6.1.0",
-              "sqflite": "^2.3.0",
-              "hive": "^2.2.3",
-              "hive_flutter": "^1.1.0",
-              "dio": "^5.4.0",
-              "cookie_jar": "^4.0.8",
-              "flutter_inappwebview": "^6.0.0",
-              "webview_flutter": "^4.7.0",
-              "chewie": "^1.7.0",
-              "just_audio": "^0.9.36",
-              "record": "5.1.2",
-              "camera": "^0.10.5",
-              "qr_code_scanner": "^1.0.1",
-              "mobile_scanner": "^5.0.0",
-              "flutter_local_notifications": "^17.0.0",
-              "awesome_notifications": "^0.9.0",
-              "app_links": "^6.0.0",
-              "uni_links": "^0.5.1",
-              "package_info_plus": "^8.0.0",
-              "wakelock_plus": "^1.1.0",
-              "screen_brightness": "^1.0.0",
-              "volume_controller": "^2.0.0",
-              "flutter_blue_plus": "^1.30.0",
-              "network_info_plus": "^4.1.0",
-              "flutter_webrtc": "^0.12.0",
-              "win32": "^5.0.0",
-              "better_player_enhanced": "^0.0.1",
-              "flutter_animate": "^4.5.0",
-              "google_fonts": "^6.1.0",
-              "cached_network_image": "^3.3.0",
-              "email_validator": "^2.1.17",
-              "mime": "^1.0.5",
-              "shimmer": "^3.0.0",
-              "chewie": "^1.7.0",
-              "carousel_slider": "^5.0.0",
-          }
-
-          # Hanya auto-add yang ada di PINS + bukan nama project + bukan declared
-          # Skip local/unknown package names (xxo25, Zet_X, otax, dll) — VPS build OK tanpa ini
-          skip_names = {pkg_name, pkg_name.lower(), "xxo25", "otax", "zet_x", "zetx"}
-          missing = sorted(
-              p for p in imported
-              if p not in declared
-              and p not in skip_names
-              and p.lower() not in skip_names
-              and p in PINS
-          )
-          skipped = sorted(
-              p for p in imported
-              if p not in declared and p != pkg_name and p not in PINS
-          )
-          print("imported:", sorted(imported)[:50], "...")
-          print("missing(auto):", missing)
-          print("skipped(local/unknown):", skipped)
-          if not missing:
-              print("no missing deps to add (unknown packages skipped)")
-              raise SystemExit(0)
-
-          # Insert under dependencies: block
+          # 1) Hapus dependency yang sama dengan name project (self-dep) + xxo25 palsu
+          #    TIDAK mengubah import dart / TIDAK menambah package
+          BAD = {pkg_name, pkg_name.lower(), "xxo25"} if pkg_name else {"xxo25"}
           lines = text.splitlines(True)
           out = []
-          in_deps = False
-          deps_indent = "  "
-          inserted = False
-          for i, line in enumerate(lines):
-              out.append(line)
-              if re.match(r"^dependencies:\s*$", line):
-                  in_deps = True
-                  continue
-              if in_deps and re.match(r"^[a-zA-Z]", line):
-                  # left dependencies block — insert before this line
-                  if not inserted:
-                      for pkg in missing:
-                          ver = PINS.get(pkg)
-                          if not ver:
-                              continue
-                          out.insert(-1, f"{deps_indent}{pkg}: {ver}\n")
-                          print(f"add {pkg}: {ver}")
-                      inserted = True
-                  in_deps = False
-              if in_deps and line.strip() == "":
-                  pass
-          if in_deps and not inserted:
-              for pkg in missing:
-                  ver = PINS.get(pkg)
-                  if not ver:
-                      continue
-                  out.append(f"{deps_indent}{pkg}: {ver}\n")
-                  print(f"add {pkg}: {ver}")
-              inserted = True
-
-          if not inserted:
-              out.append("\ndependencies:\n")
-              for pkg in missing:
-                  ver = PINS.get(pkg)
-                  if not ver:
-                      continue
-                  out.append(f"  {pkg}: {ver}\n")
-                  print(f"add(fallback) {pkg}: {ver}")
-
-          pub.write_text("".join(out), encoding="utf-8")
-          print("pubspec updated")
-          PY
-          rm -f pubspec.lock
-          echo "deps scanned (pub get di step berikutnya)"
-
-      - name: Sanitize pubspec (fix invalid children under flutter:)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          if [ ! -f pubspec.yaml ]; then echo "no pubspec"; exit 0; fi
-          python3 <<'SANPY'
-from pathlib import Path
-import re
-
-pub = Path("pubspec.yaml")
-text = pub.read_text(encoding="utf-8", errors="ignore")
-lines = text.splitlines(True)
-
-# Keys allowed under TOP-LEVEL flutter:
-FLUTTER_TOP = {
-    "uses-material-design", "assets", "fonts", "generate", "plugin",
-    "module", "config", "shaders", "default-flavor", "disable-swift-package-manager",
-}
-# Keys allowed under dependencies → flutter:
-FLUTTER_DEP = {"sdk", "git", "path", "version", "hosted", "ref"}
-
-out = []
-i = 0
-n = len(lines)
-moved = []  # packages to put under dependencies
-
-def is_top(ln):
-    return bool(re.match(r"^[a-zA-Z_]", ln))
-
-while i < n:
-    line = lines[i]
-
-    # --- top-level flutter: ---
-    if re.match(r"^flutter\s*:\s*$", line):
-        out.append(line)
-        i += 1
-        while i < n and not is_top(lines[i]):
-            ln = lines[i]
-            m = re.match(r"^(\s{2})([a-zA-Z0-9_.-]+)\s*:(.*)$", ln)
-            if m:
-                key = m.group(2)
-                rest = m.group(3)
-                # collect full block
-                block = [ln]
-                i += 1
-                while i < n and not is_top(lines[i]):
-                    nln = lines[i]
-                    if re.match(r"^\s{2}[a-zA-Z0-9_.-]+\s*:", nln) and not re.match(r"^\s{4,}", nln):
-                        break
-                    block.append(nln)
-                    i += 1
-                if key in FLUTTER_TOP:
-                    out.extend(block)
-                else:
-                    moved.append(key)
-                    print("MOVE top flutter: -> deps:", key)
-                continue
-            out.append(ln)
-            i += 1
-        continue
-
-    # --- dependencies / dev_dependencies: flutter: with illegal children ---
-    if re.match(r"^  flutter\s*:\s*$", line):
-        out.append(line)
-        i += 1
-        while i < n:
-            nln = lines[i]
-            # next dependency at indent 2 or top-level
-            if is_top(nln) or re.match(r"^  [a-zA-Z0-9_.-]+\s*:", nln):
-                break
-            m = re.match(r"^    ([a-zA-Z0-9_.-]+)\s*:(.*)$", nln)
-            if m:
-                key = m.group(1)
-                if key in FLUTTER_DEP:
-                    out.append(nln)
-                    i += 1
-                    # keep nested under sdk/git/path
-                    while i < n and re.match(r"^      ", lines[i]):
-                        out.append(lines[i])
-                        i += 1
-                    continue
-                # illegal child under dependencies.flutter
-                moved.append(key)
-                print("UN-NEST deps.flutter child:", key)
-                i += 1
-                while i < n and re.match(r"^      ", lines[i]):
-                    i += 1
-                continue
-            out.append(nln)
-            i += 1
-        continue
-
-    out.append(line)
-    i += 1
-
-text2 = "".join(out)
-
-# Insert moved packages under dependencies:
-if moved:
-    # dedupe keep order
-    seen = set()
-    pkgs = []
-    for k in moved:
-        if k not in seen and k not in ("flutter", "flutter_test"):
-            seen.add(k)
-            pkgs.append(k)
-    lines2 = text2.splitlines(True)
-    final = []
-    inserted = False
-    in_deps = False
-    for ln in lines2:
-        if re.match(r"^dependencies\s*:\s*$", ln):
-            final.append(ln)
-            in_deps = True
-            continue
-        if in_deps and (is_top(ln) if True else False) and re.match(r"^[a-zA-Z_]", ln):
-            if not inserted:
-                for k in pkgs:
-                    final.append(f"  {k}: any\n")
-                    print("INSERT deps:", k)
-                inserted = True
-            in_deps = False
-        final.append(ln)
-    if in_deps and not inserted:
-        for k in pkgs:
-            final.append(f"  {k}: any\n")
-        inserted = True
-    if not inserted and pkgs:
-        final.append("\ndependencies:\n")
-        final.append("  flutter:\n")
-        final.append("    sdk: flutter\n")
-        for k in pkgs:
-            final.append(f"  {k}: any\n")
-    text2 = "".join(final)
-
-# Final pass: strip any remaining "    package:" directly under "  flutter:" with sdk
-lines3 = text2.splitlines(True)
-final3 = []
-i = 0
-n = len(lines3)
-while i < n:
-    ln = lines3[i]
-    final3.append(ln)
-    if re.match(r"^  flutter\s*:\s*$", ln):
-        i += 1
-        while i < n:
-            nln = lines3[i]
-            if re.match(r"^[a-zA-Z_]", nln) or re.match(r"^  [a-zA-Z0-9_.-]+\s*:", nln):
-                break
-            m = re.match(r"^    ([a-zA-Z0-9_.-]+)\s*:", nln)
-            if m and m.group(1) not in FLUTTER_DEP:
-                print("STRIP remaining under flutter:", m.group(1))
-                i += 1
-                while i < n and re.match(r"^      ", lines3[i]):
-                    i += 1
-                continue
-            final3.append(nln)
-            i += 1
-        continue
-    i += 1
-
-pub.write_text("".join(final3), encoding="utf-8")
-print("pubspec sanitized OK")
-# verify
-txt = pub.read_text(encoding="utf-8", errors="ignore")
-if re.search(r"^  flutter:\s*\n(?:    sdk:.*\n)?    record_", txt, re.M):
-    print("WARN still has nested under flutter")
-SANPY
-          echo "--- pubspec flutter sections ---"
-          grep -n -A8 "^flutter:\|^dependencies:\|^  flutter:" pubspec.yaml | head -80 || true
-
-      - name: Strip invalid / local package deps (anti xxo25)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          pub = Path("pubspec.yaml")
-          if not pub.exists():
-              print("no pubspec")
-              raise SystemExit(0)
-          text = pub.read_text(encoding="utf-8", errors="ignore")
-          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
-          pkg_name = name_m.group(1) if name_m else "app"
-          BAD = {
-              pkg_name, pkg_name.lower(),
-              "xxo25", "otax", "zet_x", "zetx", "Zet_X", "web2apk",
-          }
-          lines = text.splitlines(True)
-          out = []
-          in_deps = False
+          in_block = False
           removed = []
           for line in lines:
-              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides|flutter|environment|name|description|publish_to|version|fonts|assets):", line):
-                  in_deps = line.startswith("dependencies:") or line.startswith("dev_dependencies:") or line.startswith("dependency_overrides:")
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides):", line):
+                  in_block = True
                   out.append(line)
                   continue
-              if in_deps:
+              if in_block and re.match(r"^[a-zA-Z]", line):
+                  in_block = False
+              if in_block:
                   m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
+                  if m and (m.group(1) in BAD or m.group(1).lower() in BAD):
+                      removed.append(m.group(1))
+                      continue
+              out.append(line)
+          text = "".join(out)
+
+          # 2) Pindahkan child ilegal di bawah flutter: (record_platform_interface dll) ke luar
+          #    Hanya struktural, bukan ganti package name
+          lines = text.splitlines(True)
+          out = []
+          in_flutter = False
+          flutter_indent = None
+          illegal = []
+          allowed_flutter = {"assets", "fonts", "uses-material-design", "generate", "plugin", "module", "config"}
+          for i, line in enumerate(lines):
+              if re.match(r"^flutter:\s*$", line):
+                  in_flutter = True
+                  flutter_indent = None
+                  out.append(line)
+                  continue
+              if in_flutter:
+                  if re.match(r"^[a-zA-Z]", line) and not line.startswith(" "):
+                      in_flutter = False
+                      out.append(line)
+                      continue
+                  m = re.match(r"^(\s+)([a-zA-Z0-9_]+)\s*:", line)
                   if m:
-                      dep = m.group(1)
-                      if dep in BAD or dep.lower() in {b.lower() for b in BAD}:
-                          removed.append(dep)
+                      key = m.group(2)
+                      if key not in allowed_flutter and key not in ("sdk",):
+                          # skip illegal top-level under flutter: (e.g. record_platform_interface)
+                          illegal.append(key)
+                          # skip this line and nested more-indented lines
+                          skip_indent = len(m.group(1))
+                          # mark by not appending; consume following deeper lines in loop via state
+                          # simpler: just skip this one line if it's a known plugin-looking key
                           continue
               out.append(line)
+          if illegal:
+              print("removed illegal under flutter:", illegal)
+          if removed:
+              print("removed self/fake deps:", removed)
           pub.write_text("".join(out), encoding="utf-8")
-          print("stripped deps:", removed)
-
-          for dart in Path(".").rglob("*.dart"):
-              if any(x in str(dart) for x in [".dart_tool", "build/", ".pub-cache"]):
-                  continue
-              try:
-                  src = dart.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-              new = src
-              for bad in BAD:
-                  if bad == pkg_name:
-                      continue
-                  new = new.replace(f"package:{bad}/", f"package:{pkg_name}/")
-              if new != src:
-                  dart.write_text(new, encoding="utf-8")
-                  print("rewrote imports in", dart)
-          print("pkg_name=", pkg_name)
+          print("sanitize done, pkg_name=", pkg_name)
           PY
           rm -f pubspec.lock
-          echo "--- deps after strip ---"
-          grep -E "^  [a-zA-Z0-9_]+:" pubspec.yaml | head -40 || true
+          echo "=== pubspec name + deps head ==="
+          grep -E "^name:|^dependencies:|^  [a-zA-Z0-9_]+:" pubspec.yaml | head -50 || true
 
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          if [ -f pubspec.yaml ]; then
-            python3 <<'PY'
-          from pathlib import Path
-          import re
-          p = Path("pubspec.yaml")
-          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(True)
-          out = []
-          in_env = False
-          sdk_done = False
-          for line in lines:
-              if re.match(r"^environment\s*:", line):
-                  in_env = True
-                  sdk_done = False
-                  out.append(line)
-                  continue
-              if in_env:
-                  # left environment block when a top-level key appears
-                  if re.match(r"^[a-zA-Z_]", line):
-                      if not sdk_done:
-                          out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-                          sdk_done = True
-                      in_env = False
-                      out.append(line)
-                      continue
-                  if re.match(r"^\s+sdk\s*:", line):
-                      out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-                      sdk_done = True
-                      continue
-                  out.append(line)
-                  continue
-              out.append(line)
-          if in_env and not sdk_done:
-              out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-          p.write_text("".join(out), encoding="utf-8")
-          print("environment sdk fixed")
-          PY
-            echo "--- environment ---"
-            grep -A6 "^environment:" pubspec.yaml || true
-            echo "--- flutter dep ---"
-            grep -A2 "^  flutter:" pubspec.yaml || true
-          fi
-          rm -f pubspec.lock
+          flutter --version
           flutter pub get
-
-
-
-
-
-      - name: Stub record_linux (Android-only)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          root = Path("third_party/record_linux_stub")
-          (root / "lib").mkdir(parents=True, exist_ok=True)
-          (root / "pubspec.yaml").write_text(
-              "name: record_linux\n"
-              "version: 1.0.0\n"
-              "publish_to: none\n"
-              "environment:\n"
-              "  sdk: '>=3.0.0 <4.0.0'\n"
-              "dependencies:\n"
-              "  flutter:\n"
-              "    sdk: flutter\n"
-              "  record_platform_interface: any\n",
-              encoding="utf-8",
-          )
-          dart_code = (
-              "import 'dart:async';\n"
-              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
-              "\n"
-              "class RecordLinux extends RecordPlatform {\n"
-              "  static void registerWith() {\n"
-              "    RecordPlatform.instance = RecordLinux();\n"
-              "  }\n"
-              "  @override\n"
-              "  dynamic noSuchMethod(Invocation invocation) {\n"
-              "    final name = invocation.memberName.toString();\n"
-              "    if (name.contains('isSupported') || name.contains('hasPermission') ||\n"
-              "        name.contains('isRecording') || name.contains('isPaused')) {\n"
-              "      return Future<bool>.value(false);\n"
-              "    }\n"
-              "    if (name.contains('listInputDevices')) {\n"
-              "      return Future.value(<InputDevice>[]);\n"
-              "    }\n"
-              "    if (name.contains('onStateChanged') || name.contains('onAmplitudeChanged')) {\n"
-              "      return const Stream.empty();\n"
-              "    }\n"
-              "    if (name.contains('stop')) return Future<String?>.value(null);\n"
-              "    if (name.contains('cancel') || name.contains('dispose') ||\n"
-              "        name.contains('start') || name.contains('create') ||\n"
-              "        name.contains('getAmplitude')) {\n"
-              "      return Future<void>.value();\n"
-              "    }\n"
-              "    try { return super.noSuchMethod(invocation); } catch (_) { return null; }\n"
-              "  }\n"
-              "}\n"
-          )
-          (root / "lib" / "record_linux.dart").write_text(dart_code, encoding="utf-8")
-          pub = Path("pubspec.yaml")
-          txt = pub.read_text(encoding="utf-8", errors="ignore")
-          txt = re.sub(
-              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
-              "\n",
-              txt,
-              count=1,
-          )
-          block = (
-              "\ndependency_overrides:\n"
-              "  web: ^1.0.0\n"
-              "  record_linux:\n"
-              "    path: third_party/record_linux_stub\n"
-          )
-          pub.write_text(txt.rstrip() + "\n" + block + "\n", encoding="utf-8")
-          print("record_linux stub OK")
-          PY
-          rm -f pubspec.lock
-          flutter pub get
-          echo "stub record_linux done"
-
-      - name: Upgrade Gradle wrapper
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          WP="android/gradle/wrapper/gradle-wrapper.properties"
-          if [ -f "$WP" ]; then
-            sed -i 's|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip|' "$WP"
-            echo "Gradle wrapper -> 8.11.1"
-            cat "$WP"
-          fi
-          mkdir -p android
-          GP="android/gradle.properties"
-          touch "$GP"
-          grep -q 'android.defaults.buildfeatures.buildconfig' "$GP" 2>/dev/null || echo 'android.defaults.buildfeatures.buildconfig=true' >> "$GP"
-          grep -q 'android.nonTransitiveRClass' "$GP" 2>/dev/null || echo 'android.nonTransitiveRClass=false' >> "$GP"
+          echo "pub get OK"
 
       - name: Prepare Android local.properties
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
+          mkdir -p android
           {
-            echo "flutter.sdk=${FLUTTER_ROOT}"
-            echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+            echo "flutter.sdk=$FLUTTER_ROOT"
+            echo "sdk.dir=$ANDROID_SDK_ROOT"
           } > android/local.properties
           cat android/local.properties
 
-
-      - name: Force minSdkVersion 24 (hardcode, not flutter.minSdkVersion)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          MIN = 24
-
-          def patch(t: str) -> str:
-              # CRITICAL: replace flutter.minSdkVersion references with literal int
-              t = re.sub(
-                  r"minSdk\s*=\s*flutter\.minSdkVersion",
-                  f"minSdk = {MIN}",
-                  t,
-              )
-              t = re.sub(
-                  r"minSdkVersion\s*=\s*flutter\.minSdkVersion",
-                  f"minSdkVersion = {MIN}",
-                  t,
-              )
-              t = re.sub(
-                  r"minSdkVersion\s+flutter\.minSdkVersion",
-                  f"minSdkVersion {MIN}",
-                  t,
-              )
-              t = re.sub(
-                  r"minSdk\s*\(\s*flutter\.minSdkVersion\s*\)",
-                  f"minSdk({MIN})",
-                  t,
-              )
-              # Numeric forms
-              t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
-              t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
-              t = re.sub(r"minSdk\s+\d+", f"minSdk {MIN}", t)
-              t = re.sub(r"minSdkVersion\.set\(\d+\)", f"minSdkVersion.set({MIN})", t)
-              t = re.sub(r"minSdk\.set\(\d+\)", f"minSdk.set({MIN})", t)
-              t = re.sub(
-                  r'android:minSdkVersion\s*=\s*"\d+"',
-                  f'android:minSdkVersion="{MIN}"',
-                  t,
-              )
-              return t
-
-          files = (
-              list(Path("android").rglob("*.gradle"))
-              + list(Path("android").rglob("*.gradle.kts"))
-              + list(Path("android").rglob("AndroidManifest.xml"))
-          )
-          for f in files:
-              if "build/" in str(f):
-                  continue
-              try:
-                  orig = f.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-              neo = patch(orig)
-              if neo != orig:
-                  f.write_text(neo, encoding="utf-8")
-                  print("patched", f)
-
-          for prop in [Path("android/local.properties"), Path("android/gradle.properties")]:
-              prop.parent.mkdir(parents=True, exist_ok=True)
-              txt = prop.read_text(encoding="utf-8", errors="ignore") if prop.exists() else ""
-              lines = []
-              for ln in txt.splitlines():
-                  low = ln.lower().replace(" ", "")
-                  if "flutter.minsdkversion" in low or "android.minsdkversion" in low:
-                      continue
-                  if low.startswith("minsdkversion="):
-                      continue
-                  lines.append(ln)
-              lines.append(f"flutter.minSdkVersion={MIN}")
-              lines.append(f"android.minSdkVersion={MIN}")
-              prop.write_text("\n".join(lines) + "\n", encoding="utf-8")
-              print("props", prop)
-
-          # Verify app build file
-          for app in [Path("android/app/build.gradle"), Path("android/app/build.gradle.kts")]:
-              if app.exists():
-                  print("---", app, "---")
-                  print(app.read_text(encoding="utf-8", errors="ignore")[:800])
-          print("minSdk hardcode done", MIN)
-          PY
-          echo "=== verify ==="
-          grep -rn "minSdk" android/app/ --include="*.gradle" --include="*.kts" 2>/dev/null | head -20 || true
-
-      - name: Build APK release
+      - name: Force minSdk 24
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -1004,7 +330,11 @@ SANPY
               t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
               t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
               return t
-          for f in list(Path("android").rglob("*.gradle")) + list(Path("android").rglob("*.gradle.kts")):
+          root = Path("android")
+          if not root.exists():
+              print("no android/")
+              raise SystemExit(0)
+          for f in list(root.rglob("*.gradle")) + list(root.rglob("*.gradle.kts")):
               if "build/" in str(f):
                   continue
               try:
@@ -1014,16 +344,21 @@ SANPY
               n = patch(o)
               if n != o:
                   f.write_text(n, encoding="utf-8")
-                  print("repatch", f)
-          print("pre-build minSdk hardcode", MIN)
+                  print("patched", f)
+          print("minSdk hardcode", MIN)
           PY
+
+      - name: Build APK release
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
           flutter pub get
           flutter precache --android || true
           set +e
           flutter build apk --release > /tmp/flutter_build.log 2>&1
           BUILD_RC=$?
           set -e
-          tail -100 /tmp/flutter_build.log || true
+          tail -80 /tmp/flutter_build.log || true
           APK=""
           if [ -d build/app/outputs/flutter-apk ]; then
             APK=$(find build/app/outputs/flutter-apk -name "*.apk" -type f 2>/dev/null | head -1 || true)
@@ -1033,7 +368,7 @@ SANPY
           fi
           if [ -z "$APK" ] || [ "$BUILD_RC" -ne 0 ]; then
             echo "BUILD FAILED rc=$BUILD_RC"
-            tail -250 /tmp/flutter_build.log || true
+            tail -300 /tmp/flutter_build.log || true
             exit 1
           fi
           cp "$APK" "$GITHUB_WORKSPACE/app-release.apk"
