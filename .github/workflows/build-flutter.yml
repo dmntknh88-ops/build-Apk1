@@ -290,13 +290,42 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          if [ -f pubspec.yaml ]; then
-            python3 -c 'import re,pathlib;p=pathlib.Path("pubspec.yaml");t=p.read_text(encoding="utf-8",errors="ignore");t2,n=re.subn(r"(environment:\s*\n\s*sdk:\s*)[^\n]+",r"\1\">=3.0.0 <4.0.0\"",t,count=1);p.write_text(t2 if n else t,encoding="utf-8");print("sdk relaxed" if n else "sdk skip")'
-            grep -A4 "^environment:" pubspec.yaml || true
-          fi
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("pubspec.yaml")
+          if not p.exists():
+              raise SystemExit(0)
+          t = p.read_text(encoding="utf-8", errors="ignore")
+          lines = t.splitlines(True)
+          out, in_env, done = [], False, False
+          for line in lines:
+              if re.match(r"^environment:\s*$", line):
+                  in_env, done = True, False
+                  out.append(line)
+                  continue
+              if in_env and re.match(r"^[a-zA-Z]", line):
+                  if not done:
+                      out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                      done = True
+                  in_env = False
+                  out.append(line)
+                  continue
+              if in_env and re.match(r"^\s+sdk\s*:", line):
+                  out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+                  done = True
+                  continue
+              out.append(line)
+          if in_env and not done:
+              out.append("  sdk: '>=3.0.0 <4.0.0'\n")
+          p.write_text("".join(out), encoding="utf-8")
+          print("sdk relaxed OK")
+          PY
+          grep -A4 "^environment:" pubspec.yaml || true
           rm -f pubspec.lock
+          flutter --version
           flutter pub get
-
+          echo "pub get OK"
 
       - name: Upgrade Gradle wrapper
         working-directory: ${{ steps.proj.outputs.dir }}
