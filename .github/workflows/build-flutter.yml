@@ -312,11 +312,10 @@ jobs:
         run: |
           set -e
           mkdir -p android
-          NDK_PATH="$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}"
+          # JANGAN set ndk.dir — biar ndkVersion di Gradle yang dipakai (hindari CXX1104)
           {
             echo "flutter.sdk=$FLUTTER_ROOT"
             echo "sdk.dir=$ANDROID_SDK_ROOT"
-            echo "ndk.dir=$NDK_PATH"
           } > android/local.properties
           cat android/local.properties
           python3 <<'PY'
@@ -331,17 +330,34 @@ jobs:
               t = re.sub(r"minSdkVersion\s*=\s*flutter\.minSdkVersion", f"minSdkVersion = {MIN}", t)
               t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
               t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
-              # ndkVersion di android {} block (kotlin dsl / groovy)
-              if "ndkVersion" not in t:
+              # Samakan SEMUA ndkVersion (26.x / flutter.ndkVersion / apapun) ke NDK 27
+              t = re.sub(
+                  r'ndkVersion\s*=\s*flutter\.ndkVersion',
+                  f'ndkVersion = "{NDK}"',
+                  t,
+              )
+              t = re.sub(
+                  r'ndkVersion\s*=\s*["\'][^"\']+["\']',
+                  f'ndkVersion = "{NDK}"',
+                  t,
+              )
+              t = re.sub(
+                  r'ndkVersion\s+["\'][^"\']+["\']',
+                  f'ndkVersion "{NDK}"',
+                  t,
+              )
+              t = re.sub(
+                  r"ndkVersion\s+[0-9][0-9.]+",
+                  f'ndkVersion "{NDK}"',
+                  t,
+              )
+              if "ndkVersion" not in t and re.search(r"android\s*\{", t):
                   t = re.sub(
                       r"(android\s*\{)",
                       rf'\1\n    ndkVersion = "{NDK}"',
                       t,
                       count=1,
                   )
-              else:
-                  t = re.sub(r'ndkVersion\s*=\s*"[^"]+"', f'ndkVersion = "{NDK}"', t)
-                  t = re.sub(r"ndkVersion\s+[\"'][^\"']+[\"']", f'ndkVersion "{NDK}"', t)
               return t
 
           root = Path("android")
@@ -358,7 +374,16 @@ jobs:
               if n != o:
                   f.write_text(n, encoding="utf-8")
                   print("patched", f)
-          print("minSdk+ndk done")
+          # verifikasi
+          for f in list(root.rglob("*.gradle")) + list(root.rglob("*.gradle.kts")):
+              try:
+                  t = f.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              for line in t.splitlines():
+                  if "ndkVersion" in line:
+                      print("check", f, "=>", line.strip())
+          print("minSdk+ndk done (no ndk.dir conflict)")
           PY
 
       - name: Build APK release
