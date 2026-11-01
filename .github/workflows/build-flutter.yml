@@ -25,6 +25,7 @@ env:
   FLUTTER_VERSION: "3.32.8"
   ANDROID_API_LEVEL: "34"
   ANDROID_BUILD_TOOLS: "34.0.0"
+  ANDROID_NDK_VERSION: "27.0.12077973"
 
 jobs:
   build:
@@ -108,14 +109,10 @@ jobs:
           ASSET_ID: ${{ steps.meta.outputs.asset_id }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           REPO: ${{ steps.meta.outputs.repo }}
-          INBOX: ${{ steps.meta.outputs.inbox_path }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
-          JOB_ID: ${{ steps.meta.outputs.job_id }}
         run: |
           set -eu
           TOKEN="${DL_TOKEN:-$GH_TOKEN}"
           REPO="${REPO:-$GITHUB_REPOSITORY}"
-          BRANCH="${BRANCH:-main}"
           mkdir -p project_src
           if [ -n "${ASSET_ID:-}" ] && [ -n "$TOKEN" ]; then
             echo "Download asset id=$ASSET_ID from $REPO"
@@ -136,7 +133,6 @@ jobs:
           fi
           ls -lh project.zip
           unzip -o -q project.zip -d project_src
-          echo "unzip done"
           find project_src -name pubspec.yaml -type f | head -5
 
       - name: Setup Java
@@ -145,10 +141,15 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Install Android SDK
+      - name: Install Android SDK + NDK 27
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-${{ env.ANDROID_API_LEVEL }} build-tools;${{ env.ANDROID_BUILD_TOOLS }}
+          packages: >-
+            platform-tools
+            platforms;android-${{ env.ANDROID_API_LEVEL }}
+            platforms;android-33
+            build-tools;${{ env.ANDROID_BUILD_TOOLS }}
+            ndk;${{ env.ANDROID_NDK_VERSION }}
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -185,7 +186,6 @@ jobs:
           import re
           p = Path("pubspec.yaml")
           if not p.exists():
-              print("no pubspec")
               raise SystemExit(0)
           lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(True)
           out = []
@@ -212,29 +212,24 @@ jobs:
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
           p.write_text("".join(out), encoding="utf-8")
-          print("environment sdk -> >=3.0.0 <4.0.0")
+          print("sdk relaxed")
           PY
-          grep -A6 "^environment:" pubspec.yaml || true
           rm -f pubspec.lock
 
-      - name: Sanitize pubspec (no auto-add packages)
+      - name: Sanitize pubspec (no auto-add) + fix record_linux
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
           python3 <<'PY'
           from pathlib import Path
           import re
+
           pub = Path("pubspec.yaml")
-          if not pub.exists():
-              print("no pubspec")
-              raise SystemExit(0)
           text = pub.read_text(encoding="utf-8", errors="ignore")
           name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
           pkg_name = name_m.group(1) if name_m else ""
-
-          # 1) Hapus dependency yang sama dengan name project (self-dep) + xxo25 palsu
-          #    TIDAK mengubah import dart / TIDAK menambah package
           BAD = {pkg_name, pkg_name.lower(), "xxo25"} if pkg_name else {"xxo25"}
+
           lines = text.splitlines(True)
           out = []
           in_block = False
@@ -254,47 +249,55 @@ jobs:
               out.append(line)
           text = "".join(out)
 
-          # 2) Pindahkan child ilegal di bawah flutter: (record_platform_interface dll) ke luar
-          #    Hanya struktural, bukan ganti package name
+          # Hapus child ilegal di bawah flutter:
           lines = text.splitlines(True)
           out = []
           in_flutter = False
-          flutter_indent = None
+          allowed = {"assets", "fonts", "uses-material-design", "generate", "plugin", "module", "config"}
           illegal = []
-          allowed_flutter = {"assets", "fonts", "uses-material-design", "generate", "plugin", "module", "config"}
-          for i, line in enumerate(lines):
+          skip_until_dedent = None
+          for line in lines:
               if re.match(r"^flutter:\s*$", line):
                   in_flutter = True
-                  flutter_indent = None
+                  skip_until_dedent = None
                   out.append(line)
                   continue
               if in_flutter:
                   if re.match(r"^[a-zA-Z]", line) and not line.startswith(" "):
                       in_flutter = False
+                      skip_until_dedent = None
                       out.append(line)
                       continue
-                  m = re.match(r"^(\s+)([a-zA-Z0-9_]+)\s*:", line)
-                  if m:
-                      key = m.group(2)
-                      if key not in allowed_flutter and key not in ("sdk",):
-                          # skip illegal top-level under flutter: (e.g. record_platform_interface)
-                          illegal.append(key)
-                          # skip this line and nested more-indented lines
-                          skip_indent = len(m.group(1))
-                          # mark by not appending; consume following deeper lines in loop via state
-                          # simpler: just skip this one line if it's a known plugin-looking key
+                  if skip_until_dedent is not None:
+                      indent = len(line) - len(line.lstrip(" "))
+                      if line.strip() and indent > skip_until_dedent:
                           continue
+                      skip_until_dedent = None
+                  m = re.match(r"^(\s+)([a-zA-Z0-9_]+)\s*:", line)
+                  if m and m.group(2) not in allowed:
+                      illegal.append(m.group(2))
+                      skip_until_dedent = len(m.group(1))
+                      continue
               out.append(line)
-          if illegal:
-              print("removed illegal under flutter:", illegal)
-          if removed:
-              print("removed self/fake deps:", removed)
-          pub.write_text("".join(out), encoding="utf-8")
-          print("sanitize done, pkg_name=", pkg_name)
+          text = "".join(out)
+
+          # dependency_overrides: record_linux (hindari error hasPermission di Linux stub)
+          if "dependency_overrides:" not in text:
+              text = text.rstrip() + "\n\ndependency_overrides:\n  record_linux: ^1.0.0\n"
+          elif "record_linux:" not in text:
+              text = re.sub(
+                  r"(dependency_overrides:\s*\n)",
+                  r"\1  record_linux: ^1.0.0\n",
+                  text,
+                  count=1,
+              )
+
+          pub.write_text(text, encoding="utf-8")
+          print("removed deps:", removed)
+          print("illegal flutter children:", illegal)
+          print("record_linux override OK")
           PY
           rm -f pubspec.lock
-          echo "=== pubspec name + deps head ==="
-          grep -E "^name:|^dependencies:|^  [a-zA-Z0-9_]+:" pubspec.yaml | head -50 || true
 
       - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -304,35 +307,45 @@ jobs:
           flutter pub get
           echo "pub get OK"
 
-      - name: Prepare Android local.properties
+      - name: Prepare Android (local.properties + NDK + minSdk)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
           mkdir -p android
+          NDK_PATH="$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}"
           {
             echo "flutter.sdk=$FLUTTER_ROOT"
             echo "sdk.dir=$ANDROID_SDK_ROOT"
+            echo "ndk.dir=$NDK_PATH"
           } > android/local.properties
           cat android/local.properties
-
-      - name: Force minSdk 24
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
           python3 <<'PY'
           from pathlib import Path
           import re
           MIN = 24
-          def patch(t):
+          NDK = "27.0.12077973"
+
+          def patch_gradle(t: str) -> str:
               t = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", f"minSdk = {MIN}", t)
               t = re.sub(r"minSdkVersion\s+flutter\.minSdkVersion", f"minSdkVersion {MIN}", t)
               t = re.sub(r"minSdkVersion\s*=\s*flutter\.minSdkVersion", f"minSdkVersion = {MIN}", t)
               t = re.sub(r"minSdkVersion\s+\d+", f"minSdkVersion {MIN}", t)
               t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
+              # ndkVersion di android {} block (kotlin dsl / groovy)
+              if "ndkVersion" not in t:
+                  t = re.sub(
+                      r"(android\s*\{)",
+                      rf'\1\n    ndkVersion = "{NDK}"',
+                      t,
+                      count=1,
+                  )
+              else:
+                  t = re.sub(r'ndkVersion\s*=\s*"[^"]+"', f'ndkVersion = "{NDK}"', t)
+                  t = re.sub(r"ndkVersion\s+[\"'][^\"']+[\"']", f'ndkVersion "{NDK}"', t)
               return t
+
           root = Path("android")
           if not root.exists():
-              print("no android/")
               raise SystemExit(0)
           for f in list(root.rglob("*.gradle")) + list(root.rglob("*.gradle.kts")):
               if "build/" in str(f):
@@ -341,11 +354,11 @@ jobs:
                   o = f.read_text(encoding="utf-8", errors="ignore")
               except Exception:
                   continue
-              n = patch(o)
+              n = patch_gradle(o)
               if n != o:
                   f.write_text(n, encoding="utf-8")
                   print("patched", f)
-          print("minSdk hardcode", MIN)
+          print("minSdk+ndk done")
           PY
 
       - name: Build APK release
@@ -358,7 +371,7 @@ jobs:
           flutter build apk --release > /tmp/flutter_build.log 2>&1
           BUILD_RC=$?
           set -e
-          tail -80 /tmp/flutter_build.log || true
+          tail -100 /tmp/flutter_build.log || true
           APK=""
           if [ -d build/app/outputs/flutter-apk ]; then
             APK=$(find build/app/outputs/flutter-apk -name "*.apk" -type f 2>/dev/null | head -1 || true)
