@@ -350,183 +350,7 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          pub = Path("pubspec.yaml")
-          if not pub.exists():
-              print("no pubspec")
-              raise SystemExit(0)
-          text = pub.read_text(encoding="utf-8", errors="ignore")
-          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
-          pkg_name = name_m.group(1) if name_m else ""
-
-          # packages already declared (dependencies + dev_dependencies + overrides)
-          declared = set()
-          for m in re.finditer(r"^\s{2}([a-zA-Z0-9_]+)\s*:", text, re.M):
-              declared.add(m.group(1))
-          declared |= {"flutter", "flutter_test", "flutter_localizations", "sky_engine", "meta", "collection", "vector_math", "typed_data", "characters", "material_color_utilities", "async", "boolean_selector", "clock", "fake_async", "leak_tracker", "leak_tracker_flutter_testing", "leak_tracker_testing", "matcher", "path", "source_span", "stack_trace", "stream_channel", "string_scanner", "term_glyph", "test_api", "vm_service"}
-
-          # scan dart imports
-          imported = set()
-          for dart in Path(".").rglob("*.dart"):
-              if any(x in str(dart) for x in [".dart_tool", "build/", ".pub-cache"]):
-                  continue
-              try:
-                  src = dart.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-              for m in re.finditer(r"""package:([a-zA-Z0-9_]+)/""", src):
-                  imported.add(m.group(1))
-
-          FAKE = {pkg_name, (pkg_name or "").lower(), "xxo25", "otax", "web2apk"}
-          FAKE = {x for x in FAKE if x}
-          missing = sorted(p for p in imported if p not in declared and p not in FAKE)
-          print("imported:", sorted(imported)[:40], "...")
-          print("missing:", missing)
-          if not missing:
-              print("no missing deps")
-              raise SystemExit(0)
-
-          # Known safe version pins for common packages (avoid latest breaking)
-          PINS = {
-              "file_picker": "^8.1.2",
-              "permission_handler": "^11.0.0",
-              "path_provider": "^2.1.1",
-              "shared_preferences": "^2.2.2",
-              "url_launcher": "^6.2.0",
-              "image_picker": "^1.0.7",
-              "http": "^1.2.0",
-              "intl": "^0.19.0",
-              "provider": "^6.1.0",
-              "video_player": "^2.8.0",
-              "audioplayers": "^6.0.0",
-              "web_socket_channel": "^2.4.0",
-              "socket_io_client": "^2.0.3+1",
-              "flutter_overlay_window": "^0.4.5",
-              "device_info_plus": "^10.1.0",
-              "connectivity_plus": "^6.0.0",
-              "battery_plus": "^6.0.0",
-              "geolocator": "^12.0.0",
-              "geocoding": "^3.0.0",
-              "share_plus": "^7.0.0",
-              "open_file": "^3.3.2",
-              "flutter_tts": "^4.0.0",
-              "local_auth": "^2.2.0",
-              "flutter_secure_storage": "^9.0.0",
-              "cached_network_image": "^3.3.0",
-              "shimmer": "^3.0.0",
-              "lottie": "^3.0.0",
-              "flutter_svg": "^2.0.0",
-              "carousel_slider": "^4.2.1",
-              "iconsax": "^0.0.8",
-              "font_awesome_flutter": "^10.7.0",
-              "google_fonts": "^6.1.0",
-              "sqflite": "^2.3.0",
-              "hive": "^2.2.3",
-              "hive_flutter": "^1.1.0",
-              "dio": "^5.4.0",
-              "cookie_jar": "^4.0.8",
-              "flutter_inappwebview": "^6.0.0",
-              "webview_flutter": "^4.7.0",
-              "chewie": "^1.7.0",
-              "just_audio": "^0.9.36",
-              "record": "5.1.2",
-              "camera": "^0.10.5",
-              "qr_code_scanner": "^1.0.1",
-              "mobile_scanner": "^5.0.0",
-              "flutter_local_notifications": "^17.0.0",
-              "awesome_notifications": "^0.9.0",
-              "app_links": "^6.0.0",
-              "uni_links": "^0.5.1",
-              "package_info_plus": "^8.0.0",
-              "wakelock_plus": "^1.1.0",
-              "screen_brightness": "^1.0.0",
-              "volume_controller": "^2.0.0",
-              "flutter_blue_plus": "^1.30.0",
-              "network_info_plus": "^4.1.0",
-              "flutter_webrtc": "^0.12.0",
-              "win32": "^5.0.0",
-          }
-
-          # Insert under dependencies: block
-          lines = text.splitlines(True)
-          out = []
-          in_deps = False
-          deps_indent = "  "
-          inserted = False
-          for i, line in enumerate(lines):
-              out.append(line)
-              if re.match(r"^dependencies:\s*$", line):
-                  in_deps = True
-                  continue
-              if in_deps and re.match(r"^[a-zA-Z]", line):
-                  # left dependencies block — insert before this line
-                  if not inserted:
-                      for pkg in missing:
-                          ver = PINS.get(pkg)
-                          if not ver:
-                              print(f"skip unknown {pkg}")
-                              continue
-                          out.insert(-1, f"{deps_indent}{pkg}: {ver}\n")
-                          print(f"add {pkg}: {ver}")
-                      inserted = True
-                  in_deps = False
-              if in_deps and line.strip() == "":
-                  pass
-          if in_deps and not inserted:
-              for pkg in missing:
-                  ver = PINS.get(pkg)
-                  if not ver:
-                      print(f"skip unknown {pkg}")
-                      continue
-                  out.append(f"{deps_indent}{pkg}: {ver}\n")
-                  print(f"add {pkg}: {ver}")
-              inserted = True
-
-          if not inserted:
-              # fallback: append dependencies section
-              out.append("\ndependencies:\n")
-              for pkg in missing:
-                  ver = PINS.get(pkg)
-                  if not ver:
-                      print(f"skip unknown fallback {pkg}")
-                      continue
-                  out.append(f"  {pkg}: {ver}\n")
-                  print(f"add(fallback) {pkg}: {ver}")
-
-          pub.write_text("".join(out), encoding="utf-8")
-          print("pubspec updated")
-
-          # Rewrite package:xxo25 / otax -> package:<pkg_name>
-          if pkg_name:
-              for dart in Path(".").rglob("*.dart"):
-                  s = str(dart).replace("\\", "/")
-                  if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
-                      continue
-                  try:
-                      t = dart.read_text(encoding="utf-8", errors="ignore")
-                  except Exception:
-                      continue
-                  n = t
-                  for b in ("xxo25", "otax"):
-                      if b != pkg_name:
-                          n = n.replace("package:%s/" % b, "package:%s/" % pkg_name)
-                  if n != t:
-                      dart.write_text(n, encoding="utf-8")
-                      print("rewrote import", dart)
-          # Pastikan xxo25 tidak di pubspec
-          text2 = pub.read_text(encoding="utf-8", errors="ignore")
-          text2 = re.sub(r"^\s{2}xxo25\s*:\s*.*$\n?", "", text2, flags=re.M)
-          text2 = re.sub(r"^\s{2}otax\s*:\s*.*$\n?", "", text2, flags=re.M)
-          if pkg_name:
-              text2 = re.sub(r"^\s{2}" + re.escape(pkg_name) + r"\s*:\s*.*$\n?", "", text2, flags=re.M)
-          pub.write_text(text2, encoding="utf-8")
-          print("stripped self/fake deps from pubspec")
-          PY
-          rm -f pubspec.lock
-          echo "deps scanned (pub get di step berikutnya)"
-
+          echo "SKIP auto-add packages (prevents xxo25 any)"
       - name: Sanitize pubspec (fix invalid children under flutter:)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
@@ -645,48 +469,21 @@ if moved:
         if in_deps and (is_top(ln) if True else False) and re.match(r"^[a-zA-Z_]", ln):
             if not inserted:
                 for k in pkgs:
-                    if k in ("xxo25", "otax", pkg_name if False else ""):
-                        print("skip insert fake", k)
-                    else:
-                        # only insert if known; else skip unknown local names
-                        if k in ("xxo25", "otax"):
-                            print("skip", k)
-                        else:
-                            print("skip unpinned moved", k)
-                            # do NOT add : any for unknown
-                            pass
+                    print("skip any", k)
                     print("INSERT deps:", k)
                 inserted = True
             in_deps = False
         final.append(ln)
     if in_deps and not inserted:
         for k in pkgs:
-            if k in ("xxo25", "otax", pkg_name if False else ""):
-                        print("skip insert fake", k)
-                    else:
-                        # only insert if known; else skip unknown local names
-                        if k in ("xxo25", "otax"):
-                            print("skip", k)
-                        else:
-                            print("skip unpinned moved", k)
-                            # do NOT add : any for unknown
-                            pass
+            print("skip any", k)
         inserted = True
     if not inserted and pkgs:
         final.append("\ndependencies:\n")
         final.append("  flutter:\n")
         final.append("    sdk: flutter\n")
         for k in pkgs:
-            if k in ("xxo25", "otax", pkg_name if False else ""):
-                        print("skip insert fake", k)
-                    else:
-                        # only insert if known; else skip unknown local names
-                        if k in ("xxo25", "otax"):
-                            print("skip", k)
-                        else:
-                            print("skip unpinned moved", k)
-                            # do NOT add : any for unknown
-                            pass
+            print("skip any", k)
     text2 = "".join(final)
 
 # Final pass: strip any remaining "    package:" directly under "  flutter:" with sdk
@@ -725,8 +522,7 @@ SANPY
           echo "--- pubspec flutter sections ---"
           grep -n -A8 "^flutter:\|^dependencies:\|^  flutter:" pubspec.yaml | head -80 || true
 
-
-      - name: STRIP xxo25/self before pub get
+      - name: Pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -735,19 +531,21 @@ SANPY
           import re
           p = Path("pubspec.yaml")
           if not p.exists():
-              raise SystemExit(0)
+              print("no pubspec")
+              raise SystemExit(1)
           text = p.read_text(encoding="utf-8", errors="ignore")
           name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
           pkg = name_m.group(1) if name_m else ""
           BAD = {x for x in [pkg, (pkg or "").lower(), "xxo25", "otax", "web2apk"] if x}
+
           lines = text.splitlines(True)
           out, in_block, removed = [], False, []
           for line in lines:
-              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides):", line):
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides)\s*:", line):
                   in_block = True
                   out.append(line)
                   continue
-              if in_block and re.match(r"^[a-zA-Z]", line):
+              if in_block and re.match(r"^[a-zA-Z_]", line):
                   in_block = False
               if in_block:
                   m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
@@ -756,52 +554,15 @@ SANPY
                       continue
               out.append(line)
           text = "".join(out)
-          # also remove any: xxo25: any mid-line variants
-          for b in BAD:
-              text = re.sub(rf"^\s*{re.escape(b)}\s*:\s*.*$", "", text, flags=re.M)
-          p.write_text(text, encoding="utf-8")
-          print("STRIPPED before pub get:", removed, "bad=", BAD)
-          if pkg:
-              for dart in Path(".").rglob("*.dart"):
-                  s = str(dart).replace("\\", "/")
-                  if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
-                      continue
-                  try:
-                      t = dart.read_text(encoding="utf-8", errors="ignore")
-                  except Exception:
-                      continue
-                  n = t
-                  for b in BAD:
-                      if b != pkg:
-                          n = n.replace(f"package:{b}/", f"package:{pkg}/")
-                  if n != t:
-                      dart.write_text(n, encoding="utf-8")
-                      print("rewrote", dart)
-          PY
-          rm -f pubspec.lock
-          grep -n "xxo25\|otax" pubspec.yaml && echo "WARN still has fake" || echo "pubspec clean of xxo25"
 
-      - name: Pub get
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          if [ -f pubspec.yaml ]; then
-            python3 <<'PY'
-          from pathlib import Path
-          import re
-          p = Path("pubspec.yaml")
-          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(True)
-          out = []
-          in_env = False
-          sdk_done = False
+          lines = text.splitlines(True)
+          out, in_env, sdk_done = [], False, False
           for line in lines:
               if re.match(r"^environment\s*:", line):
-                  in_env = True
-                  sdk_done = False
+                  in_env, sdk_done = True, False
                   out.append(line)
                   continue
               if in_env:
-                  # left environment block when a top-level key appears
                   if re.match(r"^[a-zA-Z_]", line):
                       if not sdk_done:
                           out.append("  sdk: '>=3.0.0 <4.0.0'\n")
@@ -818,20 +579,43 @@ SANPY
               out.append(line)
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-          p.write_text("".join(out), encoding="utf-8")
-          print("environment sdk fixed")
+          text = "".join(out)
+
+          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
+          text = text.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n"
+          p.write_text(text, encoding="utf-8")
+          print("PUBGET_PREP stripped=", removed, "pkg=", pkg)
+
+          if pkg:
+              for dart in Path(".").rglob("*.dart"):
+                  s = str(dart).replace("\\", "/")
+                  if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
+                      continue
+                  try:
+                      t = dart.read_text(encoding="utf-8", errors="ignore")
+                  except Exception:
+                      continue
+                  n = t
+                  for b in BAD:
+                      if b != pkg:
+                          n = n.replace("package:%s/" % b, "package:%s/" % pkg)
+                  if n != t:
+                      dart.write_text(n, encoding="utf-8")
+                      print("rewrote", dart)
+
+          t2 = p.read_text(encoding="utf-8", errors="ignore")
+          if re.search(r"^\s*xxo25\s*:", t2, re.M):
+              print("FATAL still xxo25 in pubspec")
+              raise SystemExit(1)
+          print("pubspec verified clean of xxo25")
           PY
-            echo "--- environment ---"
-            grep -A6 "^environment:" pubspec.yaml || true
-            echo "--- flutter dep ---"
-            grep -A2 "^  flutter:" pubspec.yaml || true
-          fi
+          echo "--- environment ---"
+          grep -A4 "^environment:" pubspec.yaml || true
+          grep -n xxo25 pubspec.yaml && exit 1 || echo "no xxo25 OK"
           rm -f pubspec.lock
+          flutter --version
           flutter pub get
-
-
-
-
+          echo "pub get OK"
 
       - name: Stub record_linux (Android-only)
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -897,7 +681,6 @@ SANPY
           block = (
               "\ndependency_overrides:\n"
               "  web: ^1.0.0\n"
-              "  collection: 1.19.1\n"
               "  record_linux:\n"
               "    path: third_party/record_linux_stub\n"
           )
