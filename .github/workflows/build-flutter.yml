@@ -215,7 +215,7 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Remove self / fake local deps only
+      - name: Relax SDK constraint only
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -223,33 +223,9 @@ jobs:
           from pathlib import Path
           import re
           pub = Path("pubspec.yaml")
-          text = pub.read_text(encoding="utf-8", errors="ignore")
-          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
-          pkg = name_m.group(1) if name_m else ""
-          # Hanya hapus nama package sendiri + alias lokal yang tidak ada di pub.dev
-          BAD = {x for x in [pkg, (pkg or "").lower(), "xxo25", "otax"] if x}
-          lines = text.splitlines(True)
-          out, in_block, removed = [], False, []
-          for line in lines:
-              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides)\s*:", line):
-                  in_block = True
-                  out.append(line)
-                  continue
-              if in_block and re.match(r"^[a-zA-Z_]", line):
-                  in_block = False
-              if in_block:
-                  m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
-                  if m and m.group(1).lower() in {b.lower() for b in BAD}:
-                      removed.append(m.group(1))
-                      continue
-              out.append(line)
-          text = "".join(out)
-          for b in list(BAD):
-              text, n = re.subn(rf"^[ \t]*{re.escape(b)}\s*:.*\n?", "", text, flags=re.M|re.I)
-              if n:
-                  removed.append(f"{b}*{n}")
-          # SDK longgar biar cocok banyak base
-          lines = text.splitlines(True)
+          if not pub.exists():
+              raise SystemExit(0)
+          lines = pub.read_text(encoding="utf-8", errors="ignore").splitlines(True)
           out, in_env, sdk_done = [], False, False
           for line in lines:
               if re.match(r"^environment\s*:", line):
@@ -273,35 +249,9 @@ jobs:
               out.append(line)
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-          text = "".join(out)
-          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
-              text = re.sub(r"^(\s*better_player_enhanced\s*):\s*.*$", r"\1 1.0.1", text, flags=re.M)
-              print("pin better_player_enhanced 1.0.1")
-          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
-          text = text.rstrip() + "\n\ndependency_overrides:\n  meta: 1.16.0\n  collection: 1.19.1\n"
-          pub.write_text(text, encoding="utf-8")
-          print("removed_local_deps=", removed)
-          # rewrite import package:xxo25 -> package:<name>
-          if pkg:
-              for dart in Path(".").rglob("*.dart"):
-                  s = str(dart).replace("\\", "/")
-                  if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
-                      continue
-                  try:
-                      t = dart.read_text(encoding="utf-8", errors="ignore")
-                  except Exception:
-                      continue
-                  n = t
-                  for b in BAD:
-                      if b.lower() != pkg.lower():
-                          n = n.replace(f"package:{b}/", f"package:{pkg}/")
-                  if n != t:
-                      dart.write_text(n, encoding="utf-8")
-          if re.search(r"^\s*xxo25\s*:", text, re.M|re.I):
-              raise SystemExit("xxo25 still in pubspec")
-          print("strip_ok")
+          pub.write_text("".join(out), encoding="utf-8")
+          print("sdk constraint relaxed only (dependencies unchanged)")
           PY
-          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || true
           rm -f pubspec.lock
 
       - name: flutter pub get
@@ -311,7 +261,65 @@ jobs:
           flutter --version
           flutter pub get
 
-      - name: Gradle 8.13 + local.properties + minSdk
+      - name: Stub record_linux for Linux CI
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          root = Path("third_party/record_linux_stub")
+          (root / "lib").mkdir(parents=True, exist_ok=True)
+          (root / "pubspec.yaml").write_text(
+              "name: record_linux\nversion: 1.0.0\npublish_to: none\n"
+              "environment:\n  sdk: '>=3.0.0 <4.0.0'\n"
+              "dependencies:\n  flutter:\n    sdk: flutter\n  record_platform_interface: any\n",
+              encoding="utf-8",
+          )
+          (root / "lib" / "record_linux.dart").write_text(
+              "import 'dart:async';\n"
+              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
+              "class RecordLinux extends RecordPlatform {\n"
+              "  static void registerWith() { RecordPlatform.instance = RecordLinux(); }\n"
+              "  @override\n"
+              "  dynamic noSuchMethod(Invocation invocation) {\n"
+              "    final name = invocation.memberName.toString();\n"
+              "    if (name.contains('isSupported') || name.contains('hasPermission') ||\n"
+              "        name.contains('isRecording') || name.contains('isPaused')) {\n"
+              "      return Future<bool>.value(false);\n"
+              "    }\n"
+              "    if (name.contains('listInputDevices')) return Future.value(<dynamic>[]);\n"
+              "    if (name.contains('onStateChanged') || name.contains('onAmplitudeChanged')) {\n"
+              "      return const Stream.empty();\n"
+              "    }\n"
+              "    if (name.contains('stop')) return Future<String?>.value(null);\n"
+              "    return Future<void>.value();\n"
+              "  }\n"
+              "}\n",
+              encoding="utf-8",
+          )
+          pub = Path("pubspec.yaml")
+          txt = pub.read_text(encoding="utf-8", errors="ignore")
+          # keep existing dependency_overrides keys, only ensure record_linux path
+          if re.search(r"^dependency_overrides\s*:", txt, re.M):
+              if "record_linux:" not in txt:
+                  txt = txt.rstrip() + "\n  record_linux:\n    path: third_party/record_linux_stub\n"
+              else:
+                  # replace existing record_linux entry block simply by rewrite overrides end
+                  pass
+          else:
+              txt = txt.rstrip() + "\n\ndependency_overrides:\n  record_linux:\n    path: third_party/record_linux_stub\n"
+          # if record_linux already under overrides as hosted, force path via full rewrite of overrides for record only
+          if "path: third_party/record_linux_stub" not in txt:
+              txt = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", txt, count=1)
+              txt = txt.rstrip() + "\n\ndependency_overrides:\n  record_linux:\n    path: third_party/record_linux_stub\n"
+          pub.write_text(txt, encoding="utf-8")
+          print("record_linux stub path override only")
+          PY
+          rm -f pubspec.lock
+          flutter pub get
+
+      - name: Gradle 8.13 + minSdk 24
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -322,7 +330,6 @@ jobs:
           else
             printf 'distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.13-all.zip\n' > "$WP"
           fi
-          cat "$WP" || true
           {
             echo "flutter.sdk=${FLUTTER_ROOT}"
             echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -350,94 +357,6 @@ jobs:
                   f.write_text(n, encoding="utf-8")
                   print("patched", f)
           PY
-
-
-      - name: Stub record_linux (Android CI only)
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          root = Path("third_party/record_linux_stub")
-          (root / "lib").mkdir(parents=True, exist_ok=True)
-          (root / "pubspec.yaml").write_text(
-              "name: record_linux\n"
-              "description: Stub for Android CI\n"
-              "version: 1.0.0\n"
-              "publish_to: none\n"
-              "environment:\n"
-              "  sdk: '>=3.0.0 <4.0.0'\n"
-              "dependencies:\n"
-              "  flutter:\n"
-              "    sdk: flutter\n"
-              "  record_platform_interface: any\n",
-              encoding="utf-8",
-          )
-          (root / "lib" / "record_linux.dart").write_text(
-              "import 'dart:async';\n"
-              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
-              "\n"
-              "class RecordLinux extends RecordPlatform {\n"
-              "  static void registerWith() {\n"
-              "    RecordPlatform.instance = RecordLinux();\n"
-              "  }\n"
-              "\n"
-              "  @override\n"
-              "  dynamic noSuchMethod(Invocation invocation) {\n"
-              "    final name = invocation.memberName.toString();\n"
-              "    if (name.contains('isSupported') ||\n"
-              "        name.contains('hasPermission') ||\n"
-              "        name.contains('isRecording') ||\n"
-              "        name.contains('isPaused')) {\n"
-              "      return Future<bool>.value(false);\n"
-              "    }\n"
-              "    if (name.contains('listInputDevices')) {\n"
-              "      return Future.value(<dynamic>[]);\n"
-              "    }\n"
-              "    if (name.contains('onStateChanged') ||\n"
-              "        name.contains('onAmplitudeChanged')) {\n"
-              "      return const Stream.empty();\n"
-              "    }\n"
-              "    if (name.contains('stop')) {\n"
-              "      return Future<String?>.value(null);\n"
-              "    }\n"
-              "    return Future<void>.value();\n"
-              "  }\n"
-              "}\n",
-              encoding="utf-8",
-          )
-          pub = Path("pubspec.yaml")
-          txt = pub.read_text(encoding="utf-8", errors="ignore")
-          # remove existing dependency_overrides block once
-          txt = re.sub(
-              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
-              "\n",
-              txt,
-              count=1,
-          )
-          # only override record_linux path — no other auto pins
-          # pin better_player if present (meta conflict on Flutter 3.32)
-          if re.search(r"^\s*better_player_enhanced\s*:", txt, re.M):
-              txt = re.sub(
-                  r"^(\s*better_player_enhanced\s*):\s*.*$",
-                  r"\1 1.0.1",
-                  txt,
-                  flags=re.M,
-              )
-              print("pin better_player_enhanced 1.0.1")
-          block = (
-              "\ndependency_overrides:\n"
-              "  meta: 1.16.0\n"
-              "  collection: 1.19.1\n"
-              "  record_linux:\n"
-              "    path: third_party/record_linux_stub\n"
-          )
-          pub.write_text(txt.rstrip() + "\n" + block + "\n", encoding="utf-8")
-          print("record_linux stub ready")
-          PY
-          rm -f pubspec.lock
-          flutter pub get
 
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
