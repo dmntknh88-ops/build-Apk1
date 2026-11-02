@@ -85,24 +85,16 @@ jobs:
 
           out = os.environ["GITHUB_OUTPUT"]
           with open(out, "a", encoding="utf-8") as f:
-              f.write(f"asset_id={asset}\
-")
-              f.write(f"release_tag={tag}\
-")
-              f.write(f"repo={repo}\
-")
-              f.write(f"app_name={app}\
-")
-              f.write(f"job_id={job_id}\
-")
-              f.write(f"inbox_path={inbox}\
-")
-              f.write(f"branch={branch}\
-")
+              f.write(f"asset_id={asset}\n")
+              f.write(f"release_tag={tag}\n")
+              f.write(f"repo={repo}\n")
+              f.write(f"app_name={app}\n")
+              f.write(f"job_id={job_id}\n")
+              f.write(f"inbox_path={inbox}\n")
+              f.write(f"branch={branch}\n")
           if token:
               with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-                  f.write(f"DL_TOKEN={token}\
-")
+                  f.write(f"DL_TOKEN={token}\n")
           print("asset_id=", asset)
           print("release_tag=", tag)
           print("repo=", repo)
@@ -438,14 +430,14 @@ YAMLFIX
               if in_env:
                   if re.match(r"^[a-zA-Z_]", line):
                       if not sdk_done:
-                          out.append("  sdk: '>=3.0.0 <4.0.0'\
+                          out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
                           sdk_done = True
                       in_env = False
                       out.append(line)
                       continue
                   if re.match(r"^\s+sdk\s*:", line):
-                      out.append("  sdk: '>=3.0.0 <4.0.0'\
+                      out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
                       sdk_done = True
                       continue
@@ -453,7 +445,7 @@ YAMLFIX
                   continue
               out.append(line)
           if in_env and not sdk_done:
-              out.append("  sdk: '>=3.0.0 <4.0.0'\
+              out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
           p.write_text("".join(out), encoding="utf-8")
           print("environment sdk -> >=3.0.0 <4.0.0")
@@ -480,18 +472,15 @@ YAMLFIX
 (?:[ \t]+[^\
 ]*\
 )*",
-              "\
-",
+              "\n",
               text,
               count=1,
           )
           overrides = "\
 dependency_overrides:\
-  web: ^1.0.0\
-"
+  web: ^1.0.0\n"
           p.write_text(text.rstrip() + "\
-" + overrides + "\
-", encoding="utf-8")
+" + overrides + "\n", encoding="utf-8")
           print("dependency_overrides: web only")
           PY
           rm -f pubspec.lock
@@ -639,8 +628,7 @@ dependency_overrides:\
                           ver = PINS.get(pkg)
                           if not ver:
                               continue
-                          out.insert(-1, f"{deps_indent}{pkg}: {ver}\
-")
+                          out.insert(-1, f"{deps_indent}{pkg}: {ver}\n")
                           print(f"add {pkg}: {ver}")
                       inserted = True
                   in_deps = False
@@ -651,21 +639,18 @@ dependency_overrides:\
                   ver = PINS.get(pkg)
                   if not ver:
                       continue
-                  out.append(f"{deps_indent}{pkg}: {ver}\
-")
+                  out.append(f"{deps_indent}{pkg}: {ver}\n")
                   print(f"add {pkg}: {ver}")
               inserted = True
 
           if not inserted:
               out.append("\
-dependencies:\
-")
+dependencies:\n")
               for pkg in missing:
                   ver = PINS.get(pkg)
                   if not ver:
                       continue
-                  out.append(f"  {pkg}: {ver}\
-")
+                  out.append(f"  {pkg}: {ver}\n")
                   print(f"add(fallback) {pkg}: {ver}")
 
           pub.write_text("".join(out), encoding="utf-8")
@@ -792,28 +777,22 @@ if moved:
         if in_deps and (is_top(ln) if True else False) and re.match(r"^[a-zA-Z_]", ln):
             if not inserted:
                 for k in pkgs:
-                    final.append(f"  {k}: any\
-")
+                    final.append(f"  {k}: any\n")
                     print("INSERT deps:", k)
                 inserted = True
             in_deps = False
         final.append(ln)
     if in_deps and not inserted:
         for k in pkgs:
-            final.append(f"  {k}: any\
-")
+            final.append(f"  {k}: any\n")
         inserted = True
     if not inserted and pkgs:
         final.append("\
-dependencies:\
-")
-        final.append("  flutter:\
-")
-        final.append("    sdk: flutter\
-")
+dependencies:\n")
+        final.append("  flutter:\n")
+        final.append("    sdk: flutter\n")
         for k in pkgs:
-            final.append(f"  {k}: any\
-")
+            final.append(f"  {k}: any\n")
     text2 = "".join(final)
 
 # Final pass: strip any remaining "    package:" directly under "  flutter:" with sdk
@@ -936,14 +915,14 @@ SANPY
                   # left environment block when a top-level key appears
                   if re.match(r"^[a-zA-Z_]", line):
                       if not sdk_done:
-                          out.append("  sdk: '>=3.0.0 <4.0.0'\
+                          out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
                           sdk_done = True
                       in_env = False
                       out.append(line)
                       continue
                   if re.match(r"^\s+sdk\s*:", line):
-                      out.append("  sdk: '>=3.0.0 <4.0.0'\
+                      out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
                       sdk_done = True
                       continue
@@ -951,7 +930,7 @@ SANPY
                   continue
               out.append(line)
           if in_env and not sdk_done:
-              out.append("  sdk: '>=3.0.0 <4.0.0'\
+              out.append("  sdk: '>=3.0.0 <4.0.0'
 ")
           p.write_text("".join(out), encoding="utf-8")
           print("environment sdk fixed")
@@ -962,12 +941,71 @@ SANPY
             grep -A2 "^  flutter:" pubspec.yaml || true
           fi
           rm -f pubspec.lock
+
+          # === PREFLIGHT FORCE STRIP xxo25 (3-layer) ===
+          python3 <<'PREFLIGHT'
+          from pathlib import Path
+          import re
+          pub = Path("pubspec.yaml")
+          if not pub.exists():
+              raise SystemExit(0)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
+          pkg = name_m.group(1) if name_m else "app"
+          BAD = {pkg, pkg.lower(), "xxo25", "otax", "zet_x", "zetx", "Zet_X", "web2apk"}
+          # Layer 1: line-based under deps blocks
+          lines = text.splitlines(True)
+          out, in_block, removed = [], False, []
+          for line in lines:
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides)\s*:", line):
+                  in_block = True
+                  out.append(line)
+                  continue
+              if in_block and re.match(r"^[a-zA-Z_]", line):
+                  in_block = False
+              if in_block:
+                  m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
+                  if m and (m.group(1) in BAD or m.group(1).lower() in {b.lower() for b in BAD}):
+                      removed.append(m.group(1))
+                      continue
+              out.append(line)
+          text = "".join(out)
+          # Layer 2: nuclear regex any indent
+          for b in list(BAD):
+              text2, n = re.subn(rf"^[ \t]*{re.escape(b)}\s*:.*\n?", "", text, flags=re.M|re.I)
+              if n:
+                  removed.append(f"{b}x{n}")
+                  text = text2
+          # Layer 3: pin + overrides
+          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
+              text = re.sub(r"^(\s*better_player_enhanced\s*:)\s*.*$", r"\1 1.0.1", text, flags=re.M)
+              print("pin better_player_enhanced 1.0.1")
+          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
+          text = text.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n  meta: 1.16.0\n  wakelock_plus: 1.2.8\n"
+          pub.write_text(text, encoding="utf-8")
+          print("PREFLIGHT stripped:", removed, "pkg=", pkg)
+          if re.search(r"^\s*xxo25\s*:", text, re.M|re.I):
+              raise SystemExit("PREFLIGHT FATAL xxo25 still present")
+          # rewrite dart imports
+          for dart in Path(".").rglob("*.dart"):
+              s = str(dart).replace("\\", "/")
+              if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
+                  continue
+              try:
+                  t = dart.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              n = t
+              for b in BAD:
+                  if b.lower() != pkg.lower():
+                      n = n.replace(f"package:{b}/", f"package:{pkg}/")
+              if n != t:
+                  dart.write_text(n, encoding="utf-8")
+          PREFLIGHT
+          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || echo "PREFLIGHT grep: no xxo25"
+          rm -f pubspec.lock
+
           flutter pub get
-
-
-
-
-
       - name: Stub record_linux (Android-only)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
@@ -978,85 +1016,47 @@ SANPY
           root = Path("third_party/record_linux_stub")
           (root / "lib").mkdir(parents=True, exist_ok=True)
           (root / "pubspec.yaml").write_text(
-              "name: record_linux\
-"
-              "version: 1.0.0\
-"
-              "publish_to: none\
-"
-              "environment:\
-"
-              "  sdk: '>=3.0.0 <4.0.0'\
-"
-              "dependencies:\
-"
-              "  flutter:\
-"
-              "    sdk: flutter\
-"
-              "  record_platform_interface: any\
-",
+              "name: record_linux\n"
+              "version: 1.0.0\n"
+              "publish_to: none\n"
+              "environment:\n"
+              "  sdk: '>=3.0.0 <4.0.0'\n"
+              "dependencies:\n"
+              "  flutter:\n"
+              "    sdk: flutter\n"
+              "  record_platform_interface: any\n",
               encoding="utf-8",
           )
           dart_code = (
-              "import 'dart:async';\
-"
-              "import 'package:record_platform_interface/record_platform_interface.dart';\
-"
-              "\
-"
-              "class RecordLinux extends RecordPlatform {\
-"
-              "  static void registerWith() {\
-"
-              "    RecordPlatform.instance = RecordLinux();\
-"
-              "  }\
-"
-              "  @override\
-"
-              "  dynamic noSuchMethod(Invocation invocation) {\
-"
-              "    final name = invocation.memberName.toString();\
-"
-              "    if (name.contains('isSupported') || name.contains('hasPermission') ||\
-"
-              "        name.contains('isRecording') || name.contains('isPaused')) {\
-"
-              "      return Future<bool>.value(false);\
-"
-              "    }\
-"
-              "    if (name.contains('listInputDevices')) {\
-"
-              "      return Future.value(<InputDevice>[]);\
-"
-              "    }\
-"
-              "    if (name.contains('onStateChanged') || name.contains('onAmplitudeChanged')) {\
-"
-              "      return const Stream.empty();\
-"
-              "    }\
-"
-              "    if (name.contains('stop')) return Future<String?>.value(null);\
-"
-              "    if (name.contains('cancel') || name.contains('dispose') ||\
-"
-              "        name.contains('start') || name.contains('create') ||\
-"
-              "        name.contains('getAmplitude')) {\
-"
-              "      return Future<void>.value();\
-"
-              "    }\
-"
-              "    try { return super.noSuchMethod(invocation); } catch (_) { return null; }\
-"
-              "  }\
-"
-              "}\
-"
+              "import 'dart:async';\n"
+              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
+              "\n"
+              "class RecordLinux extends RecordPlatform {\n"
+              "  static void registerWith() {\n"
+              "    RecordPlatform.instance = RecordLinux();\n"
+              "  }\n"
+              "  @override\n"
+              "  dynamic noSuchMethod(Invocation invocation) {\n"
+              "    final name = invocation.memberName.toString();\n"
+              "    if (name.contains('isSupported') || name.contains('hasPermission') ||\n"
+              "        name.contains('isRecording') || name.contains('isPaused')) {\n"
+              "      return Future<bool>.value(false);\n"
+              "    }\n"
+              "    if (name.contains('listInputDevices')) {\n"
+              "      return Future.value(<InputDevice>[]);\n"
+              "    }\n"
+              "    if (name.contains('onStateChanged') || name.contains('onAmplitudeChanged')) {\n"
+              "      return const Stream.empty();\n"
+              "    }\n"
+              "    if (name.contains('stop')) return Future<String?>.value(null);\n"
+              "    if (name.contains('cancel') || name.contains('dispose') ||\n"
+              "        name.contains('start') || name.contains('create') ||\n"
+              "        name.contains('getAmplitude')) {\n"
+              "      return Future<void>.value();\n"
+              "    }\n"
+              "    try { return super.noSuchMethod(invocation); } catch (_) { return null; }\n"
+              "  }\n"
+              "}\n"
           )
           (root / "lib" / "record_linux.dart").write_text(dart_code, encoding="utf-8")
           pub = Path("pubspec.yaml")
@@ -1067,28 +1067,86 @@ SANPY
 (?:[ \t]+[^\
 ]*\
 )*",
-              "\
-",
+              "\n",
               txt,
               count=1,
           )
           block = (
               "\
-dependency_overrides:\
-"
-              "  web: ^1.0.0\
-"
-              "  record_linux:\
-"
-              "    path: third_party/record_linux_stub\
-"
+dependency_overrides:\n"
+              "  web: ^1.0.0\n"
+              "  record_linux:\n"
+              "    path: third_party/record_linux_stub\n"
           )
           pub.write_text(txt.rstrip() + "\
-" + block + "\
-", encoding="utf-8")
+" + block + "\n", encoding="utf-8")
           print("record_linux stub OK")
           PY
           rm -f pubspec.lock
+
+          # === PREFLIGHT FORCE STRIP xxo25 (3-layer) ===
+          python3 <<'PREFLIGHT'
+          from pathlib import Path
+          import re
+          pub = Path("pubspec.yaml")
+          if not pub.exists():
+              raise SystemExit(0)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
+          pkg = name_m.group(1) if name_m else "app"
+          BAD = {pkg, pkg.lower(), "xxo25", "otax", "zet_x", "zetx", "Zet_X", "web2apk"}
+          # Layer 1: line-based under deps blocks
+          lines = text.splitlines(True)
+          out, in_block, removed = [], False, []
+          for line in lines:
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides)\s*:", line):
+                  in_block = True
+                  out.append(line)
+                  continue
+              if in_block and re.match(r"^[a-zA-Z_]", line):
+                  in_block = False
+              if in_block:
+                  m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
+                  if m and (m.group(1) in BAD or m.group(1).lower() in {b.lower() for b in BAD}):
+                      removed.append(m.group(1))
+                      continue
+              out.append(line)
+          text = "".join(out)
+          # Layer 2: nuclear regex any indent
+          for b in list(BAD):
+              text2, n = re.subn(rf"^[ \t]*{re.escape(b)}\s*:.*\n?", "", text, flags=re.M|re.I)
+              if n:
+                  removed.append(f"{b}x{n}")
+                  text = text2
+          # Layer 3: pin + overrides
+          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
+              text = re.sub(r"^(\s*better_player_enhanced\s*:)\s*.*$", r"\1 1.0.1", text, flags=re.M)
+              print("pin better_player_enhanced 1.0.1")
+          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
+          text = text.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n  meta: 1.16.0\n  wakelock_plus: 1.2.8\n"
+          pub.write_text(text, encoding="utf-8")
+          print("PREFLIGHT stripped:", removed, "pkg=", pkg)
+          if re.search(r"^\s*xxo25\s*:", text, re.M|re.I):
+              raise SystemExit("PREFLIGHT FATAL xxo25 still present")
+          # rewrite dart imports
+          for dart in Path(".").rglob("*.dart"):
+              s = str(dart).replace("\\", "/")
+              if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
+                  continue
+              try:
+                  t = dart.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              n = t
+              for b in BAD:
+                  if b.lower() != pkg.lower():
+                      n = n.replace(f"package:{b}/", f"package:{pkg}/")
+              if n != t:
+                  dart.write_text(n, encoding="utf-8")
+          PREFLIGHT
+          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || echo "PREFLIGHT grep: no xxo25"
+          rm -f pubspec.lock
+
           flutter pub get
           echo "stub record_linux done"
 
@@ -1194,8 +1252,7 @@ dependency_overrides:\
               lines.append(f"flutter.minSdkVersion={MIN}")
               lines.append(f"android.minSdkVersion={MIN}")
               prop.write_text("\
-".join(lines) + "\
-", encoding="utf-8")
+".join(lines) + "\n", encoding="utf-8")
               print("props", prop)
 
           # Verify app build file
@@ -1236,6 +1293,70 @@ dependency_overrides:\
                   print("repatch", f)
           print("pre-build minSdk hardcode", MIN)
           PY
+
+          # === PREFLIGHT FORCE STRIP xxo25 (3-layer) ===
+          python3 <<'PREFLIGHT'
+          from pathlib import Path
+          import re
+          pub = Path("pubspec.yaml")
+          if not pub.exists():
+              raise SystemExit(0)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+          name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
+          pkg = name_m.group(1) if name_m else "app"
+          BAD = {pkg, pkg.lower(), "xxo25", "otax", "zet_x", "zetx", "Zet_X", "web2apk"}
+          # Layer 1: line-based under deps blocks
+          lines = text.splitlines(True)
+          out, in_block, removed = [], False, []
+          for line in lines:
+              if re.match(r"^(dependencies|dev_dependencies|dependency_overrides)\s*:", line):
+                  in_block = True
+                  out.append(line)
+                  continue
+              if in_block and re.match(r"^[a-zA-Z_]", line):
+                  in_block = False
+              if in_block:
+                  m = re.match(r"^  ([a-zA-Z0-9_]+)\s*:", line)
+                  if m and (m.group(1) in BAD or m.group(1).lower() in {b.lower() for b in BAD}):
+                      removed.append(m.group(1))
+                      continue
+              out.append(line)
+          text = "".join(out)
+          # Layer 2: nuclear regex any indent
+          for b in list(BAD):
+              text2, n = re.subn(rf"^[ \t]*{re.escape(b)}\s*:.*\n?", "", text, flags=re.M|re.I)
+              if n:
+                  removed.append(f"{b}x{n}")
+                  text = text2
+          # Layer 3: pin + overrides
+          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
+              text = re.sub(r"^(\s*better_player_enhanced\s*:)\s*.*$", r"\1 1.0.1", text, flags=re.M)
+              print("pin better_player_enhanced 1.0.1")
+          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
+          text = text.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n  meta: 1.16.0\n  wakelock_plus: 1.2.8\n"
+          pub.write_text(text, encoding="utf-8")
+          print("PREFLIGHT stripped:", removed, "pkg=", pkg)
+          if re.search(r"^\s*xxo25\s*:", text, re.M|re.I):
+              raise SystemExit("PREFLIGHT FATAL xxo25 still present")
+          # rewrite dart imports
+          for dart in Path(".").rglob("*.dart"):
+              s = str(dart).replace("\\", "/")
+              if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
+                  continue
+              try:
+                  t = dart.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+              n = t
+              for b in BAD:
+                  if b.lower() != pkg.lower():
+                      n = n.replace(f"package:{b}/", f"package:{pkg}/")
+              if n != t:
+                  dart.write_text(n, encoding="utf-8")
+          PREFLIGHT
+          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || echo "PREFLIGHT grep: no xxo25"
+          rm -f pubspec.lock
+
           flutter pub get
           flutter precache --android || true
           set +e
