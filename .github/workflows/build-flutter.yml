@@ -346,6 +346,83 @@ jobs:
                   print("patched", f)
           PY
 
+
+      - name: Stub record_linux (Android CI only)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          root = Path("third_party/record_linux_stub")
+          (root / "lib").mkdir(parents=True, exist_ok=True)
+          (root / "pubspec.yaml").write_text(
+              "name: record_linux\n"
+              "description: Stub for Android CI\n"
+              "version: 1.0.0\n"
+              "publish_to: none\n"
+              "environment:\n"
+              "  sdk: '>=3.0.0 <4.0.0'\n"
+              "dependencies:\n"
+              "  flutter:\n"
+              "    sdk: flutter\n"
+              "  record_platform_interface: any\n",
+              encoding="utf-8",
+          )
+          (root / "lib" / "record_linux.dart").write_text(
+              "import 'dart:async';\n"
+              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
+              "\n"
+              "class RecordLinux extends RecordPlatform {\n"
+              "  static void registerWith() {\n"
+              "    RecordPlatform.instance = RecordLinux();\n"
+              "  }\n"
+              "\n"
+              "  @override\n"
+              "  dynamic noSuchMethod(Invocation invocation) {\n"
+              "    final name = invocation.memberName.toString();\n"
+              "    if (name.contains('isSupported') ||\n"
+              "        name.contains('hasPermission') ||\n"
+              "        name.contains('isRecording') ||\n"
+              "        name.contains('isPaused')) {\n"
+              "      return Future<bool>.value(false);\n"
+              "    }\n"
+              "    if (name.contains('listInputDevices')) {\n"
+              "      return Future.value(<dynamic>[]);\n"
+              "    }\n"
+              "    if (name.contains('onStateChanged') ||\n"
+              "        name.contains('onAmplitudeChanged')) {\n"
+              "      return const Stream.empty();\n"
+              "    }\n"
+              "    if (name.contains('stop')) {\n"
+              "      return Future<String?>.value(null);\n"
+              "    }\n"
+              "    return Future<void>.value();\n"
+              "  }\n"
+              "}\n",
+              encoding="utf-8",
+          )
+          pub = Path("pubspec.yaml")
+          txt = pub.read_text(encoding="utf-8", errors="ignore")
+          # remove existing dependency_overrides block once
+          txt = re.sub(
+              r"\n*dependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
+              "\n",
+              txt,
+              count=1,
+          )
+          # only override record_linux path — no other auto pins
+          block = (
+              "\ndependency_overrides:\n"
+              "  record_linux:\n"
+              "    path: third_party/record_linux_stub\n"
+          )
+          pub.write_text(txt.rstrip() + "\n" + block + "\n", encoding="utf-8")
+          print("record_linux stub ready")
+          PY
+          rm -f pubspec.lock
+          flutter pub get
+
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
