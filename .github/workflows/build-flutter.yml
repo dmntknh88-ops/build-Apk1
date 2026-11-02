@@ -274,6 +274,11 @@ jobs:
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
           text = "".join(out)
+          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
+              text = re.sub(r"^(\s*better_player_enhanced\s*):\s*.*$", r"\1 1.0.1", text, flags=re.M)
+              print("pin better_player_enhanced 1.0.1")
+          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
+          text = text.rstrip() + "\n\ndependency_overrides:\n  meta: 1.16.0\n  collection: 1.19.1\n"
           pub.write_text(text, encoding="utf-8")
           print("removed_local_deps=", removed)
           # rewrite import package:xxo25 -> package:<name>
@@ -412,8 +417,19 @@ jobs:
               count=1,
           )
           # only override record_linux path — no other auto pins
+          # pin better_player if present (meta conflict on Flutter 3.32)
+          if re.search(r"^\s*better_player_enhanced\s*:", txt, re.M):
+              txt = re.sub(
+                  r"^(\s*better_player_enhanced\s*):\s*.*$",
+                  r"\1 1.0.1",
+                  txt,
+                  flags=re.M,
+              )
+              print("pin better_player_enhanced 1.0.1")
           block = (
               "\ndependency_overrides:\n"
+              "  meta: 1.16.0\n"
+              "  collection: 1.19.1\n"
               "  record_linux:\n"
               "    path: third_party/record_linux_stub\n"
           )
