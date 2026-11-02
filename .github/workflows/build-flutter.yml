@@ -215,7 +215,7 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Relax SDK constraint only
+      - name: CI pubspec adjust (sdk + known conflict only)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -223,9 +223,10 @@ jobs:
           from pathlib import Path
           import re
           pub = Path("pubspec.yaml")
-          if not pub.exists():
-              raise SystemExit(0)
-          lines = pub.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+          text = pub.read_text(encoding="utf-8", errors="ignore")
+
+          # 1) SDK only
+          lines = text.splitlines(True)
           out, in_env, sdk_done = [], False, False
           for line in lines:
               if re.match(r"^environment\s*:", line):
@@ -249,19 +250,34 @@ jobs:
               out.append(line)
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
-          pub.write_text("".join(out), encoding="utf-8")
-          print("sdk constraint relaxed only (dependencies unchanged)")
+          text = "".join(out)
+
+          # 2) Hanya jika better_player_enhanced ada: pin 1.0.1 (colon tetap)
+          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
+              text = re.sub(
+                  r"^(\s*better_player_enhanced\s*:)\s*.*$",
+                  r"\1 1.0.1",
+                  text,
+                  flags=re.M,
+              )
+              print("pin better_player_enhanced: 1.0.1")
+
+          # 3) Overrides tetap: meta (Flutter 3.32) + collection
+          text = re.sub(
+              r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
+              "\n",
+              text,
+              count=1,
+          )
+          text = text.rstrip() + "\n\ndependency_overrides:\n  meta: 1.16.0\n  collection: 1.19.1\n"
+          pub.write_text(text, encoding="utf-8")
+          print("ci_pubspec_ok")
           PY
           rm -f pubspec.lock
-
-      - name: flutter pub get
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
           flutter --version
           flutter pub get
 
-      - name: Stub record_linux for Linux CI
+      - name: Stub record_linux (Linux runner only)
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
@@ -300,21 +316,28 @@ jobs:
           )
           pub = Path("pubspec.yaml")
           txt = pub.read_text(encoding="utf-8", errors="ignore")
-          # keep existing dependency_overrides keys, only ensure record_linux path
-          if re.search(r"^dependency_overrides\s*:", txt, re.M):
-              if "record_linux:" not in txt:
-                  txt = txt.rstrip() + "\n  record_linux:\n    path: third_party/record_linux_stub\n"
-              else:
-                  # replace existing record_linux entry block simply by rewrite overrides end
-                  pass
-          else:
-              txt = txt.rstrip() + "\n\ndependency_overrides:\n  record_linux:\n    path: third_party/record_linux_stub\n"
-          # if record_linux already under overrides as hosted, force path via full rewrite of overrides for record only
-          if "path: third_party/record_linux_stub" not in txt:
-              txt = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", txt, count=1)
-              txt = txt.rstrip() + "\n\ndependency_overrides:\n  record_linux:\n    path: third_party/record_linux_stub\n"
+          if re.search(r"^\s*better_player_enhanced\s*:", txt, re.M):
+              txt = re.sub(
+                  r"^(\s*better_player_enhanced\s*:)\s*.*$",
+                  r"\1 1.0.1",
+                  txt,
+                  flags=re.M,
+              )
+          txt = re.sub(
+              r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*",
+              "\n",
+              txt,
+              count=1,
+          )
+          txt = txt.rstrip() + (
+              "\n\ndependency_overrides:\n"
+              "  meta: 1.16.0\n"
+              "  collection: 1.19.1\n"
+              "  record_linux:\n"
+              "    path: third_party/record_linux_stub\n"
+          )
           pub.write_text(txt, encoding="utf-8")
-          print("record_linux stub path override only")
+          print("record_linux stub + meta override")
           PY
           rm -f pubspec.lock
           flutter pub get
