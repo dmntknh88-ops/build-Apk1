@@ -1,5 +1,4 @@
 name: Build Flutter APK
-# anti xxo25 preflight strip
 
 on:
   workflow_dispatch:
@@ -216,21 +215,19 @@ jobs:
             echo "dir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Clean pubspec + pub get
+      - name: Remove self / fake local deps only
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          echo "=== WEB2APK CLEAN v6 ==="
           python3 <<'PY'
           from pathlib import Path
           import re
           pub = Path("pubspec.yaml")
           text = pub.read_text(encoding="utf-8", errors="ignore")
           name_m = re.search(r"^name:\s*([a-zA-Z0-9_]+)", text, re.M)
-          pkg = name_m.group(1) if name_m else "app"
-          BAD = {pkg, pkg.lower(), "xxo25", "otax", "zet_x", "zetx", "web2apk"}
-          print("pkg=", pkg)
-
+          pkg = name_m.group(1) if name_m else ""
+          # Hanya hapus nama package sendiri + alias lokal yang tidak ada di pub.dev
+          BAD = {x for x in [pkg, (pkg or "").lower(), "xxo25", "otax"] if x}
           lines = text.splitlines(True)
           out, in_block, removed = [], False, []
           for line in lines:
@@ -249,9 +246,9 @@ jobs:
           text = "".join(out)
           for b in list(BAD):
               text, n = re.subn(rf"^[ \t]*{re.escape(b)}\s*:.*\n?", "", text, flags=re.M|re.I)
-              if n: removed.append(f"{b}*{n}")
-
-          # SDK
+              if n:
+                  removed.append(f"{b}*{n}")
+          # SDK longgar biar cocok banyak base
           lines = text.splitlines(True)
           out, in_env, sdk_done = [], False, False
           for line in lines:
@@ -277,106 +274,50 @@ jobs:
           if in_env and not sdk_done:
               out.append("  sdk: '>=3.0.0 <4.0.0'\n")
           text = "".join(out)
-
-          if re.search(r"^\s*better_player_enhanced\s*:", text, re.M):
-              text = re.sub(r"^(\s*better_player_enhanced\s*:)\s*.*$", r"\1 1.0.1", text, flags=re.M)
-
-          text = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", text, count=1)
-          text = text.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n  meta: 1.16.0\n  wakelock_plus: 1.2.8\n"
           pub.write_text(text, encoding="utf-8")
-          print("removed=", removed)
-
-          for dart in Path(".").rglob("*.dart"):
-              s = str(dart).replace("\\", "/")
-              if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
-                  continue
-              try:
-                  t = dart.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-              n = t
-              for b in BAD:
-                  if b.lower() != pkg.lower():
-                      n = n.replace(f"package:{b}/", f"package:{pkg}/")
-              if n != t:
-                  dart.write_text(n, encoding="utf-8")
-
+          print("removed_local_deps=", removed)
+          # rewrite import package:xxo25 -> package:<name>
+          if pkg:
+              for dart in Path(".").rglob("*.dart"):
+                  s = str(dart).replace("\\", "/")
+                  if any(x in s for x in [".dart_tool", "/build/", ".pub-cache"]):
+                      continue
+                  try:
+                      t = dart.read_text(encoding="utf-8", errors="ignore")
+                  except Exception:
+                      continue
+                  n = t
+                  for b in BAD:
+                      if b.lower() != pkg.lower():
+                          n = n.replace(f"package:{b}/", f"package:{pkg}/")
+                  if n != t:
+                      dart.write_text(n, encoding="utf-8")
           if re.search(r"^\s*xxo25\s*:", text, re.M|re.I):
-              raise SystemExit("FATAL xxo25 still in pubspec")
-          print("CLEAN_OK")
+              raise SystemExit("xxo25 still in pubspec")
+          print("strip_ok")
           PY
-          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || echo "grep: no xxo25"
+          grep -niE '^\s*xxo25\s*:' pubspec.yaml && exit 1 || true
           rm -f pubspec.lock
+
+      - name: flutter pub get
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
           flutter --version
           flutter pub get
-          echo "pub get OK"
 
-      - name: Stub record_linux
+      - name: Gradle 8.13 + local.properties + minSdk
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -e
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-          root = Path("third_party/record_linux_stub")
-          (root / "lib").mkdir(parents=True, exist_ok=True)
-          (root / "pubspec.yaml").write_text(
-              "name: record_linux\nversion: 1.0.0\npublish_to: none\n"
-              "environment:\n  sdk: '>=3.0.0 <4.0.0'\n"
-              "dependencies:\n  flutter:\n    sdk: flutter\n  record_platform_interface: any\n",
-              encoding="utf-8",
-          )
-          (root / "lib" / "record_linux.dart").write_text(
-              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
-              "class RecordLinux extends RecordPlatform {\n"
-              "  static void registerWith() { RecordPlatform.instance = RecordLinux(); }\n"
-              "  @override\n"
-              "  dynamic noSuchMethod(Invocation i) {\n"
-              "    final n = i.memberName.toString();\n"
-              "    if (n.contains('isSupported') or n.contains('hasPermission') or n.contains('isRecording') or n.contains('isPaused')): return Future<bool>.value(false);\n"
-              "    if (n.contains('listInputDevices')) return Future.value(<InputDevice>[]); \n"
-              "    if (n.contains('onStateChanged') or n.contains('onAmplitudeChanged')) return const Stream.empty();\n"
-              "    if (n.contains('stop')) return Future<String?>.value(null);\n"
-              "    return Future<void>.value();\n"
-              "  }\n"
-              "}\n".replace(" or ", " || ").replace(": return", " return"),
-              encoding="utf-8",
-          )
-          # fix dart syntax properly
-          (root / "lib" / "record_linux.dart").write_text(
-              "import 'package:record_platform_interface/record_platform_interface.dart';\n"
-              "class RecordLinux extends RecordPlatform {\n"
-              "  static void registerWith() { RecordPlatform.instance = RecordLinux(); }\n"
-              "  @override\n"
-              "  dynamic noSuchMethod(Invocation i) {\n"
-              "    final n = i.memberName.toString();\n"
-              "    if (n.contains('isSupported') || n.contains('hasPermission') || n.contains('isRecording') || n.contains('isPaused')) return Future<bool>.value(false);\n"
-              "    if (n.contains('listInputDevices')) return Future.value(<InputDevice>[]); \n"
-              "    if (n.contains('onStateChanged') || n.contains('onAmplitudeChanged')) return const Stream.empty();\n"
-              "    if (n.contains('stop')) return Future<String?>.value(null);\n"
-              "    return Future<void>.value();\n"
-              "  }\n"
-              "}\n",
-              encoding="utf-8",
-          )
-          pub = Path("pubspec.yaml")
-          txt = pub.read_text(encoding="utf-8", errors="ignore")
-          txt = re.sub(r"\ndependency_overrides:\s*\n(?:[ \t]+[^\n]*\n)*", "\n", txt, count=1)
-          pub.write_text(txt.rstrip() + "\n\ndependency_overrides:\n  web: ^1.0.0\n  collection: 1.19.1\n  meta: 1.16.0\n  wakelock_plus: 1.2.8\n  record_linux:\n    path: third_party/record_linux_stub\n", encoding="utf-8")
-          print("record_linux stub OK")
-          PY
-          rm -f pubspec.lock
-          flutter pub get
-
-      - name: Prepare Android
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -e
+          mkdir -p android/gradle/wrapper
           WP="android/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$WP" ]; then
-            sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-all.zip|' "$WP"
+            sed -i 's|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-all.zip|' "$WP"
+          else
+            printf 'distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.13-all.zip\n' > "$WP"
           fi
-          mkdir -p android
+          cat "$WP" || true
           {
             echo "flutter.sdk=${FLUTTER_ROOT}"
             echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -393,9 +334,12 @@ jobs:
               t = re.sub(r"minSdk\s*=\s*\d+", f"minSdk = {MIN}", t)
               return t
           for f in list(Path("android").rglob("*.gradle")) + list(Path("android").rglob("*.gradle.kts")):
-              if "build/" in str(f): continue
-              try: o = f.read_text(encoding="utf-8", errors="ignore")
-              except Exception: continue
+              if "build/" in str(f):
+                  continue
+              try:
+                  o = f.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
               n = patch(o)
               if n != o:
                   f.write_text(n, encoding="utf-8")
@@ -412,11 +356,11 @@ jobs:
           flutter build apk --release > /tmp/flutter_build.log 2>&1
           BUILD_RC=$?
           set -e
-          tail -80 /tmp/flutter_build.log || true
+          tail -100 /tmp/flutter_build.log || true
           APK=$(find build -name "*.apk" -type f 2>/dev/null | head -1 || true)
           if [ -z "$APK" ] || [ "$BUILD_RC" -ne 0 ]; then
             echo "BUILD FAILED rc=$BUILD_RC"
-            tail -200 /tmp/flutter_build.log || true
+            tail -250 /tmp/flutter_build.log || true
             exit 1
           fi
           cp "$APK" "$GITHUB_WORKSPACE/app-release.apk"
