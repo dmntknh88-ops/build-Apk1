@@ -381,6 +381,50 @@ jobs:
                   print("patched", f)
           PY
 
+
+      - name: Fix Jetifier / native libs (anti mergeReleaseNativeLibs)
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -e
+          mkdir -p android
+          # Prefer AndroidX without rewriting Flutter engine jars
+          if [ -f android/gradle.properties ]; then
+            grep -q 'android.useAndroidX' android/gradle.properties || echo 'android.useAndroidX=true' >> android/gradle.properties
+            if grep -q 'android.enableJetifier' android/gradle.properties; then
+              sed -i 's/android.enableJetifier=.*/android.enableJetifier=false/' android/gradle.properties
+            else
+              echo 'android.enableJetifier=false' >> android/gradle.properties
+            fi
+          else
+            printf 'org.gradle.jvmargs=-Xmx4g -XX:+HeapDumpOnOutOfMemoryError\nandroid.useAndroidX=true\nandroid.enableJetifier=false\n' > android/gradle.properties
+          fi
+          # Extra safety: disable jetifier in gradle.properties root if any
+          python3 - <<'PY'
+          from pathlib import Path
+          for p in Path(".").rglob("gradle.properties"):
+              t = p.read_text(encoding="utf-8", errors="ignore")
+              lines = []
+              seen_j = False
+              seen_x = False
+              for line in t.splitlines():
+                  if line.strip().startswith("android.enableJetifier"):
+                      lines.append("android.enableJetifier=false")
+                      seen_j = True
+                  elif line.strip().startswith("android.useAndroidX"):
+                      lines.append("android.useAndroidX=true")
+                      seen_x = True
+                  else:
+                      lines.append(line)
+              if not seen_x:
+                  lines.append("android.useAndroidX=true")
+              if not seen_j:
+                  lines.append("android.enableJetifier=false")
+              p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+              print("gradle.properties fixed", p)
+          PY
+          echo "----- android/gradle.properties -----"
+          cat android/gradle.properties || true
+
       - name: Build APK release
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
